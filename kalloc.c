@@ -18,7 +18,7 @@ typedef QTAILQ_ENTRY(run) list_entry;
 
 struct run {
   uint flags;
-  uint size; // size in page
+  uint size; // size in bytes
   //struct run *next;
   list_entry next;
   list_entry pra_link;
@@ -64,7 +64,7 @@ freerange(void *vstart, void *vend)
   char *s = (char*)PGROUNDUP((uint)vstart);
   char *e = (char*)PGROUNDUP((uint)vend);
   struct run *r = (struct run*)s;
-  r->size = ((uint)e-(uint)s) / PGSIZE;
+  r->size = ((uint)e-(uint)s);
   QTAILQ_INSERT_HEAD(&kmem.freelist, r, next);
   kmem.nfreeblock++;
 }
@@ -102,7 +102,7 @@ kfree(char *v)
   //r = (struct run*)v;
   //r->next = kmem.freelist;
   //kmem.freelist = r;
-  int n = 1;
+  int n = 1 * PGSIZE;
   struct run *p = (struct run*)v; // page(s) to free
   struct run *r = QTAILQ_FIRST(&kmem.freelist);
   p->size = n;
@@ -110,7 +110,7 @@ kfree(char *v)
   int merged = 0;
   while (count < kmem.nfreeblock)
   {
-    if ((char *)r == v + p->size * PGSIZE)
+      if ((char *)r == v + p->size)
     {
       p->size += r->size;
       QTAILQ_INSERT_BEFORE(r, p, next);
@@ -118,7 +118,7 @@ kfree(char *v)
       merged = 1;
       break;
     }
-    else if ((char *)r + r->size * PGSIZE == v)
+      else if ((char *)r + r->size == v)
     {
       r->size += p->size;
       merged = 1;
@@ -147,7 +147,7 @@ kalloc(void)
   //print_mem();
   if(kmem.use_lock)
     acquire(&kmem.lock);
-  int n = 1; // n pages to alloc
+  int n = 1 * PGSIZE; // n bytes to alloc
   struct run *r = QTAILQ_FIRST(&kmem.freelist);
   int count = 0;
   while (count < kmem.nfreeblock) {
@@ -157,7 +157,7 @@ kalloc(void)
   }
   if (count < kmem.nfreeblock){
     QTAILQ_REMOVE(&kmem.freelist, r, next);
-    struct run* remain = (struct run*)((char *)r + n * PGSIZE);
+    struct run* remain = (struct run*)((char *)r + n);
     remain->size = r->size - n;
     r->size = n;
     if (remain->size > 0)
