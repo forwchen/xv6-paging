@@ -376,3 +376,23 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   }
   return 0;
 }
+
+int
+do_pgflt(uint va)
+{
+    va = PGROUNDDOWN(va);
+    cprintf("fault addr %x\n", va);
+    int result;
+    if (va < KERNBASE + proc->sz)
+    {
+        char *newmem = kalloc();
+        if (newmem == 0)
+            return -1;
+        result = mappages(proc->pgdir, (char*)va, PGSIZE, v2p(newmem), PTE_W | PTE_U | PTE_P);
+        if (result < 0)
+            return -1;
+        return 1;
+    }
+    else
+      return -1;
+}

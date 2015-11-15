@@ -21,6 +21,7 @@ struct run {
   uint size; // size in page
   //struct run *next;
   list_entry next;
+  list_entry pra_link;
 };
 
 struct {
@@ -29,10 +30,7 @@ struct {
   uint nfreeblock;
   //struct run *freelist;
   list_head freelist;
-  list_head queue;
 } kmem;
-
-
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -44,7 +42,6 @@ kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   QTAILQ_INIT(&kmem.freelist);
-  QTAILQ_INIT(&kmem.queue);
   kmem.use_lock = 0;
   kmem.nfreeblock = 0;
   freerange(vstart, vend);
@@ -188,5 +185,4 @@ kalloc(void)
     release(&kmem.lock);
   return (char*)r;
 }
-
 
