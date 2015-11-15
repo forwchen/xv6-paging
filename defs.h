@@ -55,6 +55,8 @@ int             writei(struct inode*, char*, uint, uint);
 void            ideinit(void);
 void            ideintr(void);
 void            iderw(struct buf*);
+int             read_secs(uint, void *, uint);
+int             write_secs(uint, const void *, uint);
 
 // ioapic.c
 void            ioapicenable(int irq, int cpu);

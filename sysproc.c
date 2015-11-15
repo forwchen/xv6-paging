@@ -50,10 +50,10 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = proc->sz;
-  proc->sz += n; // add this and comment out growproc
+  //proc->sz += n; // add this and comment out growproc
                  // to produce page fault
-//  if(growproc(n) < 0)
-//    return -1;
+  if(growproc(n) < 0)
+    return -1;
   return addr;
 }
 

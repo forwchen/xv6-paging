@@ -326,6 +326,9 @@ copyuvm(pde_t *pgdir, uint sz)
     if((mem = kalloc()) == 0)
       goto bad;
     memmove(mem, (char*)p2v(pa), PGSIZE);
+    // test disk read & write
+    //write_secs(1000, (char *)p2v(pa), 8);
+    //read_secs(1000, (char *)mem, 8);
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
   }
