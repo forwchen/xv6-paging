@@ -8,13 +8,13 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "spinlock.h"
-#include "queue.h"
+#include "qemu-queue.h"
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
 
-typedef LIST_HEAD(run_list, run) list_head;
-typedef LIST_ENTRY(run) list_entry;
+typedef QTAILQ_HEAD(run_list, run) list_head;
+typedef QTAILQ_ENTRY(run) list_entry;
 
 struct run {
   uint flags;
@@ -29,6 +29,7 @@ struct {
   uint nfreeblock;
   //struct run *freelist;
   list_head freelist;
+  list_head queue;
 } kmem;
 
 
@@ -42,7 +43,8 @@ void
 kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
-  LIST_INIT(&kmem.freelist);
+  QTAILQ_INIT(&kmem.freelist);
+  QTAILQ_INIT(&kmem.queue);
   kmem.use_lock = 0;
   kmem.nfreeblock = 0;
   freerange(vstart, vend);
@@ -66,18 +68,18 @@ freerange(void *vstart, void *vend)
   char *e = (char*)PGROUNDUP((uint)vend);
   struct run *r = (struct run*)s;
   r->size = ((uint)e-(uint)s) / PGSIZE;
-  LIST_INSERT_HEAD(&kmem.freelist, r, next);
+  QTAILQ_INSERT_HEAD(&kmem.freelist, r, next);
   kmem.nfreeblock++;
 }
 
 void print_mem()
 {
-  struct run *r = LIST_FIRST(&kmem.freelist);
+  struct run *r = QTAILQ_FIRST(&kmem.freelist);
   int count = 0;
   while (count < kmem.nfreeblock) {
     cprintf("%x\t\t\t%d\n", r, r->size);
     count ++;
-    r = LIST_NEXT(r, next);
+    r = QTAILQ_NEXT(r, next);
   }
 }
 
@@ -105,7 +107,7 @@ kfree(char *v)
   //kmem.freelist = r;
   int n = 1;
   struct run *p = (struct run*)v; // page(s) to free
-  struct run *r = LIST_FIRST(&kmem.freelist);
+  struct run *r = QTAILQ_FIRST(&kmem.freelist);
   p->size = n;
   int count = 0;
   int merged = 0;
@@ -114,8 +116,8 @@ kfree(char *v)
     if ((char *)r == v + p->size * PGSIZE)
     {
       p->size += r->size;
-      LIST_INSERT_BEFORE(r, p, next);
-      LIST_REMOVE(r, next);
+      QTAILQ_INSERT_BEFORE(r, p, next);
+      QTAILQ_REMOVE(&kmem.freelist, r, next);
       merged = 1;
       break;
     }
@@ -126,11 +128,11 @@ kfree(char *v)
       break;
     }
     count ++;
-    r = LIST_NEXT(r, next);
+    r = QTAILQ_NEXT(r, next);
   }
   if (merged == 0)
   {
-    LIST_INSERT_HEAD(&kmem.freelist, p, next);
+    QTAILQ_INSERT_HEAD(&kmem.freelist, p, next);
     kmem.nfreeblock ++;
   }
 
@@ -149,20 +151,20 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   int n = 1; // n pages to alloc
-  struct run *r = LIST_FIRST(&kmem.freelist);
+  struct run *r = QTAILQ_FIRST(&kmem.freelist);
   int count = 0;
   while (count < kmem.nfreeblock) {
     if (r->size >= n) break;
     count ++;
-    r = LIST_NEXT(r, next);
+    r = QTAILQ_NEXT(r, next);
   }
   if (count < kmem.nfreeblock){
-    LIST_REMOVE(r, next);
+    QTAILQ_REMOVE(&kmem.freelist, r, next);
     struct run* remain = (struct run*)((char *)r + n * PGSIZE);
     remain->size = r->size - n;
     r->size = n;
     if (remain->size > 0)
-      LIST_INSERT_HEAD(&kmem.freelist, remain, next);
+      QTAILQ_INSERT_HEAD(&kmem.freelist, remain, next);
     else
       kmem.nfreeblock--;
     if(kmem.use_lock)
@@ -173,7 +175,7 @@ kalloc(void)
   else {
     //cprintf("cannot allocate\n");
     if(kmem.use_lock)
-    release(&kmem.lock); 
+    release(&kmem.lock);
     return NULL;
   }
 
