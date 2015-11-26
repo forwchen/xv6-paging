@@ -16,7 +16,7 @@ typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_head;
 typedef QTAILQ_ENTRY(swap_entry) list_entry;
 
 struct swap_entry{
-    pte_t * pte;
+    pte_t * ptr_pte;
     list_entry link;
 };
 
@@ -229,6 +229,21 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
   return 0;
 }
 
+pte_t *
+getpte(pde_t *pgdir, const void *va)
+{
+    pde_t *pde;
+    pte_t *pgtab;
+
+    pde = &pgdir[PDX(va)];
+    if(*pde & PTE_P){
+        pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
+    } else {
+        return 0;
+    }
+    return &pgtab[PTX(va)];
+}
+
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 int
@@ -252,6 +267,14 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     }
     memset(mem, 0, PGSIZE);
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
+    pte_t * p = getpte(pgdir, (char*)a);
+    if (*p &PTE_U)
+    {
+      struct swap_entry *e = (struct swap_entry *)alloc_slab();
+      e->ptr_pte = p;
+      cprintf("alloc %x\n", PTE_ADDR(*p));
+      QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
+    }
   }
   return newsz;
 }
@@ -268,10 +291,11 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
   if(newsz >= oldsz)
     return oldsz;
-
+  cprintf("dealloc\n");
   a = PGROUNDUP(newsz);
   for(; a  < oldsz; a += PGSIZE){
     pte = walkpgdir(pgdir, (char*)a, 0);
+    //TODO. delete pte in fifo
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
@@ -344,6 +368,14 @@ copyuvm(pde_t *pgdir, uint sz)
     //read_secs(1000, (char *)mem, 8);
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
+    pte_t * p = getpte(d, (char*)i);
+    if (*p &PTE_U)
+    {
+        struct swap_entry *e = (struct swap_entry *)alloc_slab();
+        e->ptr_pte = p;
+        cprintf("copy %x\n", PTE_ADDR(*p));
+        QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
+    }
   }
   return d;
 
@@ -422,3 +454,23 @@ swapinit()
     //QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
     //cprintf("%x\n", e);
 }
+
+void swapout()
+{
+    if (QTAILQ_EMPTY(&fifo.queue)) {cprintf("nothing to swapout");}
+    struct swap_entry * e = QTAILQ_FIRST(&fifo.queue);
+    pte_t * p = e->ptr_pte;
+
+    uint pa = PTE_ADDR(*p);
+    cprintf("swap out %x\n", pa);
+    write_secs(1024 + (pa>>9), (char *)p2v(pa), 8);
+    QTAILQ_REMOVE(&fifo.queue, e, link);
+    *p ^= PTE_P;
+    kfree(p2v(pa));
+}
+/*
+void swapin()
+{
+
+}
+*/

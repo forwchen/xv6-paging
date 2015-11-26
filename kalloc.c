@@ -10,7 +10,7 @@
 #include "spinlock.h"
 #include "qemu-queue.h"
 
-#define SLABSIZE 128
+#define SLABSIZE 32
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
@@ -46,6 +46,7 @@ void
 kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&slab.lock, "slab");
   QTAILQ_INIT(&kmem.freelist);
   kmem.use_lock = 0;
   kmem.nfreeblock = 0;
@@ -56,20 +57,21 @@ kinit1(void *vstart, void *vend)
 }
 
 void
-kinit2(void *vstart, void *vend)
-{
-  freerange(vstart, vend);
-  kmem.use_lock = 1;
-  slab.use_lock = 1;
-}
-
-void
 slabinit()
 {
   char *p = kalloc();
   char *start = p;
   for (; p + SLABSIZE < start + PGSIZE; p += SLABSIZE)
     free_slab(p);
+}
+
+void
+kinit2(void *vstart, void *vend)
+{
+  //freerange(vstart, vend);
+  kmem.use_lock = 1;
+  slab.use_lock = 1;
+  slabinit();
 }
 
 void
@@ -109,7 +111,6 @@ kfree(char *v)
 
   if(kmem.use_lock)
     acquire(&kmem.lock);
-
   struct run *p = (struct run*)v; // page to free
   p->size = PGSIZE;
   QTAILQ_INSERT_HEAD(&kmem.freelist, p, link);
@@ -124,7 +125,6 @@ free_slab(char *v)
 {
   if (slab.use_lock)
       acquire(&slab.lock);
-
   struct run *p = (struct run*)v;
   p->size = SLABSIZE;
   QTAILQ_INSERT_HEAD(&slab.freelist, p, link);
@@ -142,6 +142,10 @@ kalloc(void)
 {
   //struct run *r;
   //print_mem();
+  if (kmem.nfreeblock == 0){
+    cprintf("no free memory\n");
+    swapout();
+  }
   if(kmem.use_lock)
     acquire(&kmem.lock);
 
@@ -159,7 +163,7 @@ alloc_slab(void)
 {
   if (slab.use_lock)
     acquire(&slab.lock);
-
+  if (slab.nfreeblock == 0) slabinit();
   struct run *r = QTAILQ_FIRST(&slab.freelist);
   QTAILQ_REMOVE(&slab.freelist, r, link);
   slab.nfreeblock--;

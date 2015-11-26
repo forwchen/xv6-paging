@@ -70,7 +70,6 @@ void            kinit1(void*, void*);
 void            kinit2(void*, void*);
 void            free_slab(char*);
 char*           alloc_slab(void);
-void            slabinit(void);
 
 // kbd.c
 void            kbdintr(void);
@@ -183,6 +182,8 @@ int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 int             do_pgflt(uint);
 void            swapinit(void);
+void            swapout(void);
+pde_t*          getpte(pde_t *, const void *);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
