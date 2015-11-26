@@ -10,6 +10,8 @@
 #include "spinlock.h"
 #include "qemu-queue.h"
 
+#define SLABSIZE 32
+
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
 
@@ -17,20 +19,23 @@ typedef QTAILQ_HEAD(run_list, run) list_head;
 typedef QTAILQ_ENTRY(run) list_entry;
 
 struct run {
-  uint flags;
   uint size; // size in bytes
-  //struct run *next;
-  list_entry next;
-  list_entry pra_link;
+  list_entry link;
 };
 
 struct {
   struct spinlock lock;
   int use_lock;
   uint nfreeblock;
-  //struct run *freelist;
   list_head freelist;
 } kmem;
+
+struct {
+  struct spinlock lock;
+  int use_lock;
+  uint nfreeblock;
+  list_head freelist;
+} slab;
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -44,6 +49,9 @@ kinit1(void *vstart, void *vend)
   QTAILQ_INIT(&kmem.freelist);
   kmem.use_lock = 0;
   kmem.nfreeblock = 0;
+  QTAILQ_INIT(&slab.freelist);
+  slab.use_lock = 0;
+  slab.nfreeblock = 0;
   freerange(vstart, vend);
 }
 
@@ -52,21 +60,24 @@ kinit2(void *vstart, void *vend)
 {
   freerange(vstart, vend);
   kmem.use_lock = 1;
+  slab.use_lock = 1;
+}
+
+void
+slabinit()
+{
+  char *p = kalloc();
+  for (; p + SLABSIZE < p + PGSIZE; p += SLABSIZE)
+    free_slab(p);
 }
 
 void
 freerange(void *vstart, void *vend)
 {
-//  char *p;
-//  p = (char*)PGROUNDUP((uint)vstart);
-//  for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
-//    kfree(p);
-  char *s = (char*)PGROUNDUP((uint)vstart);
-  char *e = (char*)PGROUNDUP((uint)vend);
-  struct run *r = (struct run*)s;
-  r->size = ((uint)e-(uint)s);
-  QTAILQ_INSERT_HEAD(&kmem.freelist, r, next);
-  kmem.nfreeblock++;
+  char *p;
+  p = (char*)PGROUNDUP((uint)vstart);
+  for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
+    kfree(p);
 }
 
 void print_mem()
@@ -76,7 +87,7 @@ void print_mem()
   while (count < kmem.nfreeblock) {
     cprintf("%x\t\t\t%d\n", r, r->size);
     count ++;
-    r = QTAILQ_NEXT(r, next);
+    r = QTAILQ_NEXT(r, link);
   }
 }
 
@@ -88,8 +99,6 @@ void print_mem()
 void
 kfree(char *v)
 {
-  //struct run *r;
-  //cprintf("kfree %x\n", v);
   //print_mem();
   if((uint)v % PGSIZE || v < end || v2p(v) >= PHYSTOP)
     panic("kfree");
@@ -99,42 +108,29 @@ kfree(char *v)
 
   if(kmem.use_lock)
     acquire(&kmem.lock);
-  //r = (struct run*)v;
-  //r->next = kmem.freelist;
-  //kmem.freelist = r;
-  int n = 1 * PGSIZE;
-  struct run *p = (struct run*)v; // page(s) to free
-  struct run *r = QTAILQ_FIRST(&kmem.freelist);
-  p->size = n;
-  int count = 0;
-  int merged = 0;
-  while (count < kmem.nfreeblock)
-  {
-      if ((char *)r == v + p->size)
-    {
-      p->size += r->size;
-      QTAILQ_INSERT_BEFORE(r, p, next);
-      QTAILQ_REMOVE(&kmem.freelist, r, next);
-      merged = 1;
-      break;
-    }
-      else if ((char *)r + r->size == v)
-    {
-      r->size += p->size;
-      merged = 1;
-      break;
-    }
-    count ++;
-    r = QTAILQ_NEXT(r, next);
-  }
-  if (merged == 0)
-  {
-    QTAILQ_INSERT_HEAD(&kmem.freelist, p, next);
-    kmem.nfreeblock ++;
-  }
+
+  struct run *p = (struct run*)v; // page to free
+  p->size = PGSIZE;
+  QTAILQ_INSERT_HEAD(&kmem.freelist, p, link);
+  kmem.nfreeblock ++;
 
   if(kmem.use_lock)
     release(&kmem.lock);
+}
+
+void
+free_slab(char *v)
+{
+  if (slab.use_lock)
+      acquire(&slab.lock);
+
+  struct run *p = (struct run*)v;
+  p->size = SLABSIZE;
+  QTAILQ_INSERT_HEAD(&slab.freelist, p, link);
+  slab.nfreeblock ++;
+
+  if (slab.use_lock)
+      release(&slab.lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -147,143 +143,28 @@ kalloc(void)
   //print_mem();
   if(kmem.use_lock)
     acquire(&kmem.lock);
-  int n = 1 * PGSIZE; // n bytes to alloc
+
   struct run *r = QTAILQ_FIRST(&kmem.freelist);
-  int count = 0;
-  while (count < kmem.nfreeblock) {
-    if (r->size >= n) break;
-    count ++;
-    r = QTAILQ_NEXT(r, next);
-  }
-  if (count < kmem.nfreeblock){
-    QTAILQ_REMOVE(&kmem.freelist, r, next);
-    struct run* remain = (struct run*)((char *)r + n);
-    remain->size = r->size - n;
-    r->size = n;
-    if (remain->size > 0)
-      QTAILQ_INSERT_HEAD(&kmem.freelist, remain, next);
-    else
-      kmem.nfreeblock--;
-    if(kmem.use_lock)
-    release(&kmem.lock);
-    //cprintf("kalloc %x\n", r);
-    return (char*)r;
-  }
-  else {
-    //cprintf("cannot allocate\n");
-    if(kmem.use_lock)
-    release(&kmem.lock);
-    return NULL;
-  }
+  QTAILQ_REMOVE(&kmem.freelist, r, link);
+  kmem.nfreeblock--;
 
-//  r = kmem.freelist;
-//  if(r)
-//    kmem.freelist = r->next;
-
-  // will not execute anyway
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;
 }
 
-void
-kfree_bytes(char *v, uint n)
-{
-  //struct run *r;
-  //cprintf("kfree %x\n", v);
-  //print_mem();
-  if((uint)v % PGSIZE || v < end || v2p(v) >= PHYSTOP)
-    panic("kfree");
-
-  // Fill with junk to catch dangling refs.
-  // memset(v, 1, PGSIZE);
-
-  if(kmem.use_lock)
-    acquire(&kmem.lock);
-  //r = (struct run*)v;
-  //r->next = kmem.freelist;
-  //kmem.freelist = r;
-  //int n = 1 * PGSIZE;
-  struct run *p = (struct run*)v; // page(s) to free
-  struct run *r = QTAILQ_FIRST(&kmem.freelist);
-  p->size = n;
-  int count = 0;
-  int merged = 0;
-  while (count < kmem.nfreeblock)
-  {
-      if ((char *)r == v + p->size)
-    {
-      p->size += r->size;
-      QTAILQ_INSERT_BEFORE(r, p, next);
-      QTAILQ_REMOVE(&kmem.freelist, r, next);
-      merged = 1;
-      break;
-    }
-      else if ((char *)r + r->size == v)
-    {
-      r->size += p->size;
-      merged = 1;
-      break;
-    }
-    count ++;
-    r = QTAILQ_NEXT(r, next);
-  }
-  if (merged == 0)
-  {
-    QTAILQ_INSERT_HEAD(&kmem.freelist, p, next);
-    kmem.nfreeblock ++;
-  }
-
-  if(kmem.use_lock)
-    release(&kmem.lock);
-}
-
-// Allocate one 4096-byte page of physical memory.
-// Returns a pointer that the kernel can use.
-// Returns 0 if the memory cannot be allocated.
 char*
-kalloc_bytes(uint n)
+alloc_slab(void)
 {
-  //struct run *r;
-  //print_mem();
-  if(kmem.use_lock)
-    acquire(&kmem.lock);
-  //int n = 1 * PGSIZE; // n bytes to alloc
-  struct run *r = QTAILQ_FIRST(&kmem.freelist);
-  int count = 0;
-  while (count < kmem.nfreeblock) {
-    if (r->size >= n) break;
-    count ++;
-    r = QTAILQ_NEXT(r, next);
-  }
-  if (count < kmem.nfreeblock){
-    QTAILQ_REMOVE(&kmem.freelist, r, next);
-    struct run* remain = (struct run*)((char *)r + n);
-    remain->size = r->size - n;
-    r->size = n;
-    if (remain->size > 0)
-      QTAILQ_INSERT_HEAD(&kmem.freelist, remain, next);
-    else
-      kmem.nfreeblock--;
-    if(kmem.use_lock)
-    release(&kmem.lock);
-    //cprintf("kalloc %x\n", r);
-    return (char*)r;
-  }
-  else {
-    //cprintf("cannot allocate\n");
-    if(kmem.use_lock)
-    release(&kmem.lock);
-    return NULL;
-  }
+  if (slab.use_lock)
+    acquire(&slab.lock);
 
-//  r = kmem.freelist;
-//  if(r)
-//    kmem.freelist = r->next;
+  struct run *r = QTAILQ_FIRST(&slab.freelist);
+  QTAILQ_REMOVE(&slab.freelist, r, link);
+  slab.nfreeblock--;
 
-  // will not execute anyway
-  if(kmem.use_lock)
-    release(&kmem.lock);
+  if (slab.use_lock)
+    release(&slab.lock);
   return (char*)r;
 }
 
