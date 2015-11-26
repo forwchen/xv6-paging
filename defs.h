@@ -70,6 +70,8 @@ void            kinit1(void*, void*);
 void            kinit2(void*, void*);
 void            free_slab(char*);
 char*           alloc_slab(void);
+void            slabinit(void);
+
 // kbd.c
 void            kbdintr(void);
 

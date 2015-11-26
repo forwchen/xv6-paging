@@ -12,16 +12,17 @@ extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
 
-typedef QTAILQ_HEAD(swapentry_list, swapentry) list_head;
-typedef QTAILQ_ENTRY(swapentry) list_entry;
+typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_head;
+typedef QTAILQ_ENTRY(swap_entry) list_entry;
 
-struct swapentry{
+struct swap_entry{
+    pte_t * pte;
     list_entry link;
 };
 
 struct {
-    list_head entrys;
-} swapinfo;
+    list_head queue;
+} fifo;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -416,5 +417,8 @@ do_pgflt(uint va)
 void
 swapinit()
 {
-    QTAILQ_INIT(&swapinfo.entrys);
+    QTAILQ_INIT(&fifo.queue);
+    //struct swap_entry *e = (struct swap_entry *)alloc_slab();
+    //QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
+    //cprintf("%x\n", e);
 }

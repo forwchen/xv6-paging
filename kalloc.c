@@ -10,7 +10,7 @@
 #include "spinlock.h"
 #include "qemu-queue.h"
 
-#define SLABSIZE 32
+#define SLABSIZE 128
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
@@ -67,7 +67,8 @@ void
 slabinit()
 {
   char *p = kalloc();
-  for (; p + SLABSIZE < p + PGSIZE; p += SLABSIZE)
+  char *start = p;
+  for (; p + SLABSIZE < start + PGSIZE; p += SLABSIZE)
     free_slab(p);
 }
 
