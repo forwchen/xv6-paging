@@ -6,10 +6,22 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include "qemu-queue.h"
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
+
+typedef QTAILQ_HEAD(swapentry_list, swapentry) list_head;
+typedef QTAILQ_ENTRY(swapentry) list_entry;
+
+struct swapentry{
+    list_entry link;
+};
+
+struct {
+    list_head entrys;
+} swapinfo;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -398,4 +410,11 @@ do_pgflt(uint va)
     }
     else
       return -1;
+}
+
+
+void
+swapinit()
+{
+    QTAILQ_INIT(&swapinfo.entrys);
 }
