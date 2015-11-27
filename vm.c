@@ -277,13 +277,20 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
     if (*p &PTE_U) addswap(p);
-    /*{
-      struct swap_entry *e = (struct swap_entry *)alloc_slab();
-      e->ptr_pte = p;
-      QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
-    }*/
   }
   return newsz;
+}
+
+void
+removeswap(pte_t *p)
+{
+    struct swap_entry *e;
+    QTAILQ_FOREACH(e, &fifo.queue, link) {
+        if (e->ptr_pte == p) {
+            QTAILQ_REMOVE(&fifo.queue, e, link);
+            break;
+        }
+    }
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -304,15 +311,7 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
-      struct swap_entry *e;
-      QTAILQ_FOREACH(e, &fifo.queue, link)
-      {
-        if (e->ptr_pte == pte)
-        {
-            QTAILQ_REMOVE(&fifo.queue, e, link);
-            break;
-        }
-      }
+      removeswap(pte);
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
@@ -380,18 +379,10 @@ copyuvm(pde_t *pgdir, uint sz)
     if((mem = kalloc()) == 0)
       goto bad;
     memmove(mem, (char*)p2v(pa), PGSIZE);
-    // test disk read & write
-    //write_secs(1000, (char *)p2v(pa), 8);
-    //read_secs(1000, (char *)mem, 8);
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
     if (*p &PTE_U) addswap(p);
-    /*{
-        struct swap_entry *e = (struct swap_entry *)alloc_slab();
-        e->ptr_pte = p;
-        QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
-    }*/
   }
   return d;
 
@@ -446,7 +437,6 @@ do_pgflt(uint va)
 {
     va = PGROUNDDOWN(va);
     cprintf("fault addr %x\n", va);
-    //int result;
     if (va < KERNBASE + proc->sz)
     {
         return swapin(va);
@@ -474,9 +464,6 @@ void
 swapinit()
 {
     QTAILQ_INIT(&fifo.queue);
-    //struct swap_entry *e = (struct swap_entry *)alloc_slab();
-    //QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
-    //cprintf("%x\n", e);
 }
 
 int swapout()
@@ -496,9 +483,3 @@ int swapout()
     kfree(p2v(pa));
     return 1;
 }
-/*
-void swapin()
-{
-
-}
-*/

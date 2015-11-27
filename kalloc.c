@@ -102,7 +102,6 @@ void print_mem()
 void
 kfree(char *v)
 {
-  //print_mem();
   if((uint)v % PGSIZE || v < end || v2p(v) >= PHYSTOP)
     panic("kfree");
 
@@ -140,8 +139,6 @@ free_slab(char *v)
 char*
 kalloc(void)
 {
-  //struct run *r;
-  //print_mem();
   if (kmem.nfreeblock == 0){
       if (swapout() == 0) return 0;
   }

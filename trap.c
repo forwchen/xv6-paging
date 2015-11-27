@@ -81,7 +81,7 @@ trap(struct trapframe *tf)
     //    panic("trap");
     //}
     if (do_pgflt(rcr2()) < 0){
-        cprintf("can not handler user page fault from cpu %x eip %x cr2 %x",cpu->id, tf->eip, rcr2());
+        cprintf("can not handler page fault from cpu %x eip %x cr2 %x",cpu->id, tf->eip, rcr2());
         panic("page fault");
     }
     break;
