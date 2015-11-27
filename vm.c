@@ -77,6 +77,14 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
   return &pgtab[PTX(va)];
 }
 
+void
+addswap(pte_t *p)
+{
+    struct swap_entry *e = (struct swap_entry *)alloc_slab();
+    e->ptr_pte = p;
+    QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
+}
+
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
@@ -268,13 +276,12 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     memset(mem, 0, PGSIZE);
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
-    if (*p &PTE_U)
-    {
+    if (*p &PTE_U) addswap(p);
+    /*{
       struct swap_entry *e = (struct swap_entry *)alloc_slab();
       e->ptr_pte = p;
-      cprintf("alloc %x\n", PTE_ADDR(*p));
       QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
-    }
+    }*/
   }
   return newsz;
 }
@@ -291,14 +298,21 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
   if(newsz >= oldsz)
     return oldsz;
-  cprintf("dealloc\n");
   a = PGROUNDUP(newsz);
   for(; a  < oldsz; a += PGSIZE){
     pte = walkpgdir(pgdir, (char*)a, 0);
-    //TODO. delete pte in fifo
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
+      struct swap_entry *e;
+      QTAILQ_FOREACH(e, &fifo.queue, link)
+      {
+        if (e->ptr_pte == pte)
+        {
+            QTAILQ_REMOVE(&fifo.queue, e, link);
+            break;
+        }
+      }
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
@@ -369,13 +383,12 @@ copyuvm(pde_t *pgdir, uint sz)
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
-    if (*p &PTE_U)
-    {
+    if (*p &PTE_U) addswap(p);
+    /*{
         struct swap_entry *e = (struct swap_entry *)alloc_slab();
         e->ptr_pte = p;
-        cprintf("copy %x\n", PTE_ADDR(*p));
         QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
-    }
+    }*/
   }
   return d;
 
@@ -430,16 +443,27 @@ do_pgflt(uint va)
 {
     va = PGROUNDDOWN(va);
     cprintf("fault addr %x\n", va);
-    int result;
+    //int result;
     if (va < KERNBASE + proc->sz)
     {
-        char *newmem = kalloc();
-        if (newmem == 0)
+        char *mem = kalloc();
+        if (mem == 0)
             return -1;
-        result = mappages(proc->pgdir, (char*)va, PGSIZE, v2p(newmem), PTE_W | PTE_U | PTE_P);
-        if (result < 0)
-            return -1;
-        return 1;
+        /*
+        if (*p & PTE_P)
+        {
+            result = mappages(proc->pgdir, (char*)va, PGSIZE, v2p(mem), PTE_W | PTE_U | PTE_P);
+            return result;
+        }
+        */
+
+        pte_t *p = getpte(proc->pgdir, (char*)va);
+        uint pa = PTE_ADDR(*p);
+        read_secs(1024 + (pa>>9), (char *)mem, 8);
+        *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
+        addswap(p);
+        //}
+        return 0;
     }
     else
       return -1;
@@ -455,9 +479,12 @@ swapinit()
     //cprintf("%x\n", e);
 }
 
-void swapout()
+int swapout()
 {
-    if (QTAILQ_EMPTY(&fifo.queue)) {cprintf("nothing to swapout");}
+    if (QTAILQ_EMPTY(&fifo.queue)) {
+        cprintf("nothing to swapout");
+        return 0;
+    }
     struct swap_entry * e = QTAILQ_FIRST(&fifo.queue);
     pte_t * p = e->ptr_pte;
 
@@ -467,6 +494,7 @@ void swapout()
     QTAILQ_REMOVE(&fifo.queue, e, link);
     *p ^= PTE_P;
     kfree(p2v(pa));
+    return 1;
 }
 /*
 void swapin()
