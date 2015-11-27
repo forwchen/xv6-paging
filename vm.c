@@ -371,7 +371,10 @@ copyuvm(pde_t *pgdir, uint sz)
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
+    {
+        swapin(i);
+      //panic("copyuvm: page not present");
+    }
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -446,29 +449,26 @@ do_pgflt(uint va)
     //int result;
     if (va < KERNBASE + proc->sz)
     {
-        char *mem = kalloc();
-        if (mem == 0)
-            return -1;
-        /*
-        if (*p & PTE_P)
-        {
-            result = mappages(proc->pgdir, (char*)va, PGSIZE, v2p(mem), PTE_W | PTE_U | PTE_P);
-            return result;
-        }
-        */
-
-        pte_t *p = getpte(proc->pgdir, (char*)va);
-        uint pa = PTE_ADDR(*p);
-        read_secs(1024 + (pa>>9), (char *)mem, 8);
-        *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
-        addswap(p);
-        //}
-        return 0;
+        return swapin(va);
     }
     else
       return -1;
 }
 
+int
+swapin(uint va)
+{
+    char *mem = kalloc();
+    if (mem ==0) return -1;
+
+    pte_t *p = getpte(proc->pgdir, (char*)va);
+    if (p == 0) return -1;
+    uint pa = PTE_ADDR(*p);
+    read_secs(1024 + (pa>>9), (char *)mem, 8);
+    *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
+    addswap(p);
+    return 0;
+}
 
 void
 swapinit()
