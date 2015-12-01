@@ -469,8 +469,7 @@ swapinit()
 int swapout()
 {
     if (QTAILQ_EMPTY(&fifo.queue)) {
-        cprintf("nothing to swapout");
-        return 0;
+        panic("nothing to swapout");
     }
     struct swap_entry * e = QTAILQ_FIRST(&fifo.queue);
     pte_t * p = e->ptr_pte;
