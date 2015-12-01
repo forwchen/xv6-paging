@@ -8,19 +8,34 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "spinlock.h"
+#include "qemu-queue.h"
+
+#define SLABSIZE 32
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
 
+typedef QTAILQ_HEAD(run_list, run) list_head;
+typedef QTAILQ_ENTRY(run) list_entry;
+
 struct run {
-  struct run *next;
+  uint size; // size in bytes
+  list_entry link;
 };
 
 struct {
   struct spinlock lock;
   int use_lock;
-  struct run *freelist;
+  uint nfreeblock;
+  list_head freelist;
 } kmem;
+
+struct {
+  struct spinlock lock;
+  int use_lock;
+  uint nfreeblock;
+  list_head freelist;
+} slab;
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -31,15 +46,32 @@ void
 kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&slab.lock, "slab");
+  QTAILQ_INIT(&kmem.freelist);
   kmem.use_lock = 0;
+  kmem.nfreeblock = 0;
+  QTAILQ_INIT(&slab.freelist);
+  slab.use_lock = 0;
+  slab.nfreeblock = 0;
   freerange(vstart, vend);
+}
+
+void
+slabinit()
+{
+  char *p = kalloc();
+  char *start = p;
+  for (; p + SLABSIZE < start + PGSIZE; p += SLABSIZE)
+    free_slab(p);
 }
 
 void
 kinit2(void *vstart, void *vend)
 {
-  freerange(vstart, vend);
+  //freerange(vstart, vend);
   kmem.use_lock = 1;
+  slab.use_lock = 1;
+  slabinit();
 }
 
 void
@@ -51,6 +83,17 @@ freerange(void *vstart, void *vend)
     kfree(p);
 }
 
+void print_mem()
+{
+  struct run *r = QTAILQ_FIRST(&kmem.freelist);
+  int count = 0;
+  while (count < kmem.nfreeblock) {
+    cprintf("%x\t\t\t%d\n", r, r->size);
+    count ++;
+    r = QTAILQ_NEXT(r, link);
+  }
+}
+
 //PAGEBREAK: 21
 // Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
@@ -59,21 +102,35 @@ freerange(void *vstart, void *vend)
 void
 kfree(char *v)
 {
-  struct run *r;
-
   if((uint)v % PGSIZE || v < end || v2p(v) >= PHYSTOP)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
-
+  // memset(v, 1, PGSIZE);
+  cprintf("free %x\n", v2p(v));
   if(kmem.use_lock)
     acquire(&kmem.lock);
-  r = (struct run*)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+  struct run *p = (struct run*)v; // page to free
+  p->size = PGSIZE;
+  QTAILQ_INSERT_HEAD(&kmem.freelist, p, link);
+  kmem.nfreeblock ++;
+
   if(kmem.use_lock)
     release(&kmem.lock);
+}
+
+void
+free_slab(char *v)
+{
+  if (slab.use_lock)
+      acquire(&slab.lock);
+  struct run *p = (struct run*)v;
+  p->size = SLABSIZE;
+  QTAILQ_INSERT_HEAD(&slab.freelist, p, link);
+  slab.nfreeblock ++;
+
+  if (slab.use_lock)
+      release(&slab.lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -82,15 +139,34 @@ kfree(char *v)
 char*
 kalloc(void)
 {
-  struct run *r;
-
+  if (kmem.nfreeblock == 0){
+      if (swapout() == 0) return 0;
+  }
   if(kmem.use_lock)
     acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
+
+  struct run *r = QTAILQ_FIRST(&kmem.freelist);
+  QTAILQ_REMOVE(&kmem.freelist, r, link);
+  kmem.nfreeblock--;
+  cprintf("alloc %x\n", v2p(r));
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;
 }
+
+char*
+alloc_slab(void)
+{
+  if (slab.use_lock)
+    acquire(&slab.lock);
+  if (slab.nfreeblock == 0) slabinit();
+  struct run *r = QTAILQ_FIRST(&slab.freelist);
+  QTAILQ_REMOVE(&slab.freelist, r, link);
+  slab.nfreeblock--;
+
+  if (slab.use_lock)
+    release(&slab.lock);
+  return (char*)r;
+}
+
 

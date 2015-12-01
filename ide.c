@@ -35,7 +35,7 @@ idewait(int checkerr)
 {
   int r;
 
-  while(((r = inb(0x1f7)) & (IDE_BSY|IDE_DRDY)) != IDE_DRDY) 
+  while(((r = inb(0x1f7)) & (IDE_BSY|IDE_DRDY)) != IDE_DRDY)
     ;
   if(checkerr && (r & (IDE_DF|IDE_ERR)) != 0)
     return -1;
@@ -51,7 +51,7 @@ ideinit(void)
   picenable(IRQ_IDE);
   ioapicenable(IRQ_IDE, ncpu - 1);
   idewait(0);
-  
+
   // Check if disk 1 is present
   outb(0x1f6, 0xe0 | (1<<4));
   for(i=0; i<1000; i++){
@@ -60,7 +60,7 @@ ideinit(void)
       break;
     }
   }
-  
+
   // Switch back to disk 0.
   outb(0x1f6, 0xe0 | (0<<4));
 }
@@ -105,12 +105,12 @@ ideintr(void)
   // Read data if needed.
   if(!(b->flags & B_DIRTY) && idewait(1) >= 0)
     insl(0x1f0, b->data, 512/4);
-  
+
   // Wake process waiting for this buf.
   b->flags |= B_VALID;
   b->flags &= ~B_DIRTY;
   wakeup(b);
-  
+
   // Start disk on next buf in queue.
   if(idequeue != 0)
     idestart(idequeue);
@@ -119,7 +119,7 @@ ideintr(void)
 }
 
 //PAGEBREAK!
-// Sync buf with disk. 
+// Sync buf with disk.
 // If B_DIRTY is set, write buf to disk, clear B_DIRTY, set B_VALID.
 // Else if B_VALID is not set, read buf from disk, set B_VALID.
 void
@@ -141,11 +141,11 @@ iderw(struct buf *b)
   for(pp=&idequeue; *pp; pp=&(*pp)->qnext)  //DOC:insert-queue
     ;
   *pp = b;
-  
+
   // Start disk if necessary.
   if(idequeue == b)
     idestart(b);
-  
+
   // Wait for request to finish.
   while((b->flags & (B_VALID|B_DIRTY)) != B_VALID){
     sleep(b, &idelock);
@@ -153,3 +153,57 @@ iderw(struct buf *b)
 
   release(&idelock);
 }
+
+int
+read_secs(uint secno, void *dst, uint nsecs)
+{
+    acquire(&idelock);
+
+    idewait(0);
+    outb(0x3f6, 0);
+    outb(0x1f2, nsecs);
+    outb(0x1f3, secno & 0xff);
+    outb(0x1f4, (secno >> 8) & 0xff);
+    outb(0x1f5, (secno >> 16) & 0xff);
+    outb(0x1f6, 0xe0 | ((secno>>24)&0x0f));
+    outb(0x1f7, IDE_CMD_READ);
+    int ret = 0;
+    for (; nsecs > 0; nsecs --, dst += 512) {
+        if ((ret = idewait(0)) != 0) {
+            release(&idelock);
+            return ret;
+        }
+        insl(0x1f0, dst, 512 / 4);
+    }
+
+    release(&idelock);
+    return 0;
+}
+
+int
+write_secs(uint secno, const void *src, uint nsecs)
+{
+    acquire(&idelock);
+
+    idewait(0);
+    outb(0x3f6, 0);
+    outb(0x1f2, nsecs);
+    outb(0x1f3, secno & 0xff);
+    outb(0x1f4, (secno >> 8) & 0xff);
+    outb(0x1f5, (secno >> 16) & 0xff);
+    outb(0x1f6, 0xe0 | ((secno>>24)&0x0f));
+    outb(0x1f7, IDE_CMD_WRITE);
+    int ret = 0;
+    for (; nsecs > 0; nsecs --, src += 512) {
+        if ((ret = idewait(0)) != 0) {
+            release(&idelock);
+            return ret;
+        }
+        outsl(0x1f0, src, 512 / 4);
+    }
+
+    release(&idelock);
+    return 0;
+}
+
+

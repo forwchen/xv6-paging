@@ -45,7 +45,6 @@ trap(struct trapframe *tf)
       exit();
     return;
   }
-
   switch(tf->trapno){
   case T_IRQ0 + IRQ_TIMER:
     if(cpu->id == 0){
@@ -77,7 +76,15 @@ trap(struct trapframe *tf)
             cpu->id, tf->cs, tf->eip);
     lapiceoi();
     break;
-   
+  case T_PGFLT:
+    //if (proc == 0  || (tf->cs&3) == 0){
+    //    panic("trap");
+    //}
+    if (do_pgflt(rcr2()) < 0){
+        cprintf("can not handler page fault from cpu %x eip %x cr2 %x",cpu->id, tf->eip, rcr2());
+        panic("page fault");
+    }
+    break;
   //PAGEBREAK: 13
   default:
     if(proc == 0 || (tf->cs&3) == 0){

@@ -6,10 +6,23 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include "qemu-queue.h"
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
+
+typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_head;
+typedef QTAILQ_ENTRY(swap_entry) list_entry;
+
+struct swap_entry{
+    pte_t * ptr_pte;
+    list_entry link;
+};
+
+struct {
+    list_head queue;
+} fifo;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -33,7 +46,7 @@ seginit(void)
 
   lgdt(c->gdt, sizeof(c->gdt));
   loadgs(SEG_KCPU << 3);
-  
+
   // Initialize cpu-local storage.
   cpu = c;
   proc = 0;
@@ -57,11 +70,19 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
     // Make sure all those PTE_P bits are zero.
     memset(pgtab, 0, PGSIZE);
     // The permissions here are overly generous, but they can
-    // be further restricted by the permissions in the page table 
+    // be further restricted by the permissions in the page table
     // entries, if necessary.
     *pde = v2p(pgtab) | PTE_P | PTE_W | PTE_U;
   }
   return &pgtab[PTX(va)];
+}
+
+void
+addswap(pte_t *p)
+{
+    struct swap_entry *e = (struct swap_entry *)alloc_slab();
+    e->ptr_pte = p;
+    QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -72,7 +93,6 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
   pte_t *pte;
-  
   a = (char*)PGROUNDDOWN((uint)va);
   last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
   for(;;){
@@ -94,7 +114,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 // current process's page table during system calls and interrupts;
 // page protection bits prevent user code from using the kernel's
 // mappings.
-// 
+//
 // setupkvm() and exec() set up every page table like this:
 //
 //   0..KERNBASE: user memory (text+data+stack+heap), mapped to
@@ -102,7 +122,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 //   KERNBASE..KERNBASE+EXTMEM: mapped to 0..EXTMEM (for I/O space)
 //   KERNBASE+EXTMEM..data: mapped to EXTMEM..V2P(data)
 //                for the kernel's instructions and r/o data
-//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP, 
+//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP,
 //                                  rw data + free physical memory
 //   0xfe000000..0: mapped direct (devices such as ioapic)
 //
@@ -137,9 +157,11 @@ setupkvm(void)
   if (p2v(PHYSTOP) > (void*)DEVSPACE)
     panic("PHYSTOP too high");
   for(k = kmap; k < &kmap[NELEM(kmap)]; k++)
-    if(mappages(pgdir, k->virt, k->phys_end - k->phys_start, 
+  {
+      if(mappages(pgdir, k->virt, k->phys_end - k->phys_start,
                 (uint)k->phys_start, k->perm) < 0)
       return 0;
+  }
   return pgdir;
 }
 
@@ -182,7 +204,7 @@ void
 inituvm(pde_t *pgdir, char *init, uint sz)
 {
   char *mem;
-  
+
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
@@ -215,6 +237,21 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
   return 0;
 }
 
+pte_t *
+getpte(pde_t *pgdir, const void *va)
+{
+    pde_t *pde;
+    pte_t *pgtab;
+
+    pde = &pgdir[PDX(va)];
+    if(*pde & PTE_P){
+        pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
+    } else {
+        return 0;
+    }
+    return &pgtab[PTX(va)];
+}
+
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 int
@@ -238,8 +275,22 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     }
     memset(mem, 0, PGSIZE);
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
+    pte_t * p = getpte(pgdir, (char*)a);
+    if (*p &PTE_U) addswap(p);
   }
   return newsz;
+}
+
+void
+removeswap(pte_t *p)
+{
+    struct swap_entry *e;
+    QTAILQ_FOREACH(e, &fifo.queue, link) {
+        if (e->ptr_pte == p) {
+            QTAILQ_REMOVE(&fifo.queue, e, link);
+            break;
+        }
+    }
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -254,13 +305,13 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
   if(newsz >= oldsz)
     return oldsz;
-
   a = PGROUNDUP(newsz);
   for(; a  < oldsz; a += PGSIZE){
     pte = walkpgdir(pgdir, (char*)a, 0);
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
+      removeswap(pte);
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
@@ -313,14 +364,16 @@ copyuvm(pde_t *pgdir, uint sz)
   pte_t *pte;
   uint pa, i, flags;
   char *mem;
-
   if((d = setupkvm()) == 0)
     return 0;
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
+    {
+        swapin(i);
+      //panic("copyuvm: page not present");
+    }
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -328,6 +381,8 @@ copyuvm(pde_t *pgdir, uint sz)
     memmove(mem, (char*)p2v(pa), PGSIZE);
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
+    pte_t * p = getpte(d, (char*)i);
+    if (*p &PTE_U) addswap(p);
   }
   return d;
 
@@ -376,3 +431,55 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   }
   return 0;
 }
+
+int
+do_pgflt(uint va)
+{
+    va = PGROUNDDOWN(va);
+    cprintf("fault addr %x\n", va);
+    if (va < KERNBASE + proc->sz)
+    {
+        return swapin(va);
+    }
+    else
+      return -1;
+}
+
+int
+swapin(uint va)
+{
+    char *mem = kalloc();
+    if (mem ==0) return -1;
+
+    pte_t *p = getpte(proc->pgdir, (char*)va);
+    if (p == 0) return -1;
+    uint pa = PTE_ADDR(*p);
+    read_secs(1024 + (pa>>9), (char *)mem, 8);
+    *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
+    addswap(p);
+    return 0;
+}
+
+void
+swapinit()
+{
+    QTAILQ_INIT(&fifo.queue);
+}
+
+int swapout()
+{
+    if (QTAILQ_EMPTY(&fifo.queue)) {
+        panic("nothing to swapout");
+    }
+    struct swap_entry * e = QTAILQ_FIRST(&fifo.queue);
+    pte_t * p = e->ptr_pte;
+
+    uint pa = PTE_ADDR(*p);
+    cprintf("swap out %x\n", pa);
+    write_secs(1024 + (pa>>9), (char *)p2v(pa), 8);
+    QTAILQ_REMOVE(&fifo.queue, e, link);
+    *p ^= PTE_P;
+    kfree(p2v(pa));
+    return 1;
+}
+
