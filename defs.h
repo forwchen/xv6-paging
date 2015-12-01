@@ -55,8 +55,6 @@ int             writei(struct inode*, char*, uint, uint);
 void            ideinit(void);
 void            ideintr(void);
 void            iderw(struct buf*);
-int             read_secs(uint, void *, uint);
-int             write_secs(uint, const void *, uint);
 
 // ioapic.c
 void            ioapicenable(int irq, int cpu);
@@ -68,8 +66,7 @@ char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
-char*           kalloc_bytes(uint);
-void            kfree_bytes(char*, uint);
+
 // kbd.c
 void            kbdintr(void);
 
@@ -179,8 +176,6 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
-int             do_pgflt(uint);
-void            swapinit(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

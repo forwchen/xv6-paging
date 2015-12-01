@@ -6,22 +6,10 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
-#include "qemu-queue.h"
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
-
-typedef QTAILQ_HEAD(swapentry_list, swapentry) list_head;
-typedef QTAILQ_ENTRY(swapentry) list_entry;
-
-struct swapentry{
-    list_entry link;
-};
-
-struct {
-    list_head entrys;
-} swapinfo;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -45,7 +33,7 @@ seginit(void)
 
   lgdt(c->gdt, sizeof(c->gdt));
   loadgs(SEG_KCPU << 3);
-
+  
   // Initialize cpu-local storage.
   cpu = c;
   proc = 0;
@@ -69,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
     // Make sure all those PTE_P bits are zero.
     memset(pgtab, 0, PGSIZE);
     // The permissions here are overly generous, but they can
-    // be further restricted by the permissions in the page table
+    // be further restricted by the permissions in the page table 
     // entries, if necessary.
     *pde = v2p(pgtab) | PTE_P | PTE_W | PTE_U;
   }
@@ -84,6 +72,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
   pte_t *pte;
+  
   a = (char*)PGROUNDDOWN((uint)va);
   last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
   for(;;){
@@ -105,7 +94,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 // current process's page table during system calls and interrupts;
 // page protection bits prevent user code from using the kernel's
 // mappings.
-//
+// 
 // setupkvm() and exec() set up every page table like this:
 //
 //   0..KERNBASE: user memory (text+data+stack+heap), mapped to
@@ -113,7 +102,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 //   KERNBASE..KERNBASE+EXTMEM: mapped to 0..EXTMEM (for I/O space)
 //   KERNBASE+EXTMEM..data: mapped to EXTMEM..V2P(data)
 //                for the kernel's instructions and r/o data
-//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP,
+//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP, 
 //                                  rw data + free physical memory
 //   0xfe000000..0: mapped direct (devices such as ioapic)
 //
@@ -148,11 +137,9 @@ setupkvm(void)
   if (p2v(PHYSTOP) > (void*)DEVSPACE)
     panic("PHYSTOP too high");
   for(k = kmap; k < &kmap[NELEM(kmap)]; k++)
-  {
-      if(mappages(pgdir, k->virt, k->phys_end - k->phys_start,
+    if(mappages(pgdir, k->virt, k->phys_end - k->phys_start, 
                 (uint)k->phys_start, k->perm) < 0)
       return 0;
-  }
   return pgdir;
 }
 
@@ -195,7 +182,7 @@ void
 inituvm(pde_t *pgdir, char *init, uint sz)
 {
   char *mem;
-
+  
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
@@ -326,6 +313,7 @@ copyuvm(pde_t *pgdir, uint sz)
   pte_t *pte;
   uint pa, i, flags;
   char *mem;
+
   if((d = setupkvm()) == 0)
     return 0;
   for(i = 0; i < sz; i += PGSIZE){
@@ -338,9 +326,6 @@ copyuvm(pde_t *pgdir, uint sz)
     if((mem = kalloc()) == 0)
       goto bad;
     memmove(mem, (char*)p2v(pa), PGSIZE);
-    // test disk read & write
-    //write_secs(1000, (char *)p2v(pa), 8);
-    //read_secs(1000, (char *)mem, 8);
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
   }
@@ -390,31 +375,4 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
     va = va0 + PGSIZE;
   }
   return 0;
-}
-
-int
-do_pgflt(uint va)
-{
-    va = PGROUNDDOWN(va);
-    cprintf("fault addr %x\n", va);
-    int result;
-    if (va < KERNBASE + proc->sz)
-    {
-        char *newmem = kalloc();
-        if (newmem == 0)
-            return -1;
-        result = mappages(proc->pgdir, (char*)va, PGSIZE, v2p(newmem), PTE_W | PTE_U | PTE_P);
-        if (result < 0)
-            return -1;
-        return 1;
-    }
-    else
-      return -1;
-}
-
-
-void
-swapinit()
-{
-    QTAILQ_INIT(&swapinfo.entrys);
 }
