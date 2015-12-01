@@ -11,14 +11,33 @@
 #include "spinlock.h"
 #include "buf.h"
 
-#define IDE_BSY       0x80
-#define IDE_DRDY      0x40
-#define IDE_DF        0x20
-#define IDE_ERR       0x01
+#define ISA_DATA                0x00
+#define ISA_ERROR               0x01
+#define ISA_PRECOMP             0x01
+#define ISA_CTRL                0x02
+#define ISA_SECCNT              0x02
+#define ISA_SECTOR              0x03
+#define ISA_CYL_LO              0x04
+#define ISA_CYL_HI              0x05
+#define ISA_SDH                 0x06
+#define ISA_COMMAND             0x07
+#define ISA_STATUS              0x07
 
-#define IDE_CMD_READ  0x20
-#define IDE_CMD_WRITE 0x30
+#define IDE_BSY                 0x80
+#define IDE_DRDY                0x40
+#define IDE_DF                  0x20
+#define IDE_ERR                 0x01
 
+#define IDE_CMD_READ            0x20
+#define IDE_CMD_WRITE           0x30
+
+#define IO_BASE0                0x1F0
+#define IO_BASE1                0x170
+#define IO_CTRL0                0x3F4
+#define IO_CTRL1                0x374
+
+#define SWAP_DEVNO				4
+#define SECTSIZE				512
 // idequeue points to the buf now being read/written to the disk.
 // idequeue->qnext points to the next buf to be processed.
 // You must hold idelock while manipulating queue.
@@ -26,10 +45,12 @@
 static struct spinlock idelock;
 static struct buf *idequeue;
 
-static int havedisk1;
+static int havedisk1 = 0;
+static int havedisk4 = 0;
 static void idestart(struct buf*);
 
 // Wait for IDE disk to become ready.
+/*
 static int
 idewait(int checkerr)
 {
@@ -41,6 +62,17 @@ idewait(int checkerr)
     return -1;
   return 0;
 }
+*/
+static int
+idewait(unsigned short iobase, int check_error) {
+    int r;
+    while ((r = inb(iobase + ISA_STATUS)) & IDE_BSY)
+        /* nothing */;
+    if (check_error && (r & (IDE_DF | IDE_ERR)) != 0) {
+        return -1;
+    }
+    return 0;
+}
 
 void
 ideinit(void)
@@ -50,16 +82,30 @@ ideinit(void)
   initlock(&idelock, "ide");
   picenable(IRQ_IDE);
   ioapicenable(IRQ_IDE, ncpu - 1);
-  idewait(0);
+  idewait(IO_BASE0, 0);
 
   // Check if disk 1 is present
-  outb(0x1f6, 0xe0 | (1<<4));
+  outb(IO_BASE0 + ISA_SDH, 0xe0 | ((1 & 1)<<4));
   for(i=0; i<1000; i++){
-    if(inb(0x1f7) != 0){
+    if(inb(IO_BASE0 + ISA_STATUS) != 0){
       havedisk1 = 1;
       break;
     }
   }
+  if (havedisk1 == 0)
+    panic("ide disk 1 not present");
+
+  idewait(IO_BASE1, 0);
+  // check if disk 4 is present
+  outb(IO_BASE1 + ISA_SDH, 0xe0 | ((SWAP_DEVNO & 1)<<4));
+  for(i=0; i<1000; i++){
+    if(inb(IO_BASE1 + ISA_STATUS) != 0){
+      havedisk4 = 1;
+      break;
+    }
+  }
+  if (havedisk4 == 0)
+    panic("ide disk 4(swap disk) not present");
 
   // Switch back to disk 0.
   outb(0x1f6, 0xe0 | (0<<4));
@@ -72,7 +118,7 @@ idestart(struct buf *b)
   if(b == 0)
     panic("idestart");
 
-  idewait(0);
+  idewait(IO_BASE0, 0);
   outb(0x3f6, 0);  // generate interrupt
   outb(0x1f2, 1);  // number of sectors
   outb(0x1f3, b->sector & 0xff);
@@ -103,7 +149,7 @@ ideintr(void)
   idequeue = b->qnext;
 
   // Read data if needed.
-  if(!(b->flags & B_DIRTY) && idewait(1) >= 0)
+  if(!(b->flags & B_DIRTY) && idewait(IO_BASE0, 1) >= 0)
     insl(0x1f0, b->data, 512/4);
 
   // Wake process waiting for this buf.
@@ -155,25 +201,28 @@ iderw(struct buf *b)
 }
 
 int
-read_secs(uint secno, void *dst, uint nsecs)
+read_swap(uint secno, void *dst, uint nsecs)
 {
     acquire(&idelock);
 
-    idewait(0);
-    outb(0x3f6, 0);
-    outb(0x1f2, nsecs);
-    outb(0x1f3, secno & 0xff);
-    outb(0x1f4, (secno >> 8) & 0xff);
-    outb(0x1f5, (secno >> 16) & 0xff);
-    outb(0x1f6, 0xe0 | ((secno>>24)&0x0f));
-    outb(0x1f7, IDE_CMD_READ);
+	uint ideno = SWAP_DEVNO, iobase = IO_BASE1, ioctrl = IO_CTRL1;
+    idewait(IO_BASE1, 0);
+
+    outb(ioctrl + ISA_CTRL, 0);
+    outb(iobase + ISA_SECCNT, nsecs);
+    outb(iobase + ISA_SECTOR, secno & 0xFF);
+    outb(iobase + ISA_CYL_LO, (secno >> 8) & 0xFF);
+    outb(iobase + ISA_CYL_HI, (secno >> 16) & 0xFF);
+    outb(iobase + ISA_SDH, 0xE0 | ((ideno & 1) << 4) | ((secno >> 24) & 0xF));
+    outb(iobase + ISA_COMMAND, IDE_CMD_READ);
+
     int ret = 0;
-    for (; nsecs > 0; nsecs --, dst += 512) {
-        if ((ret = idewait(0)) != 0) {
+    for (; nsecs > 0; nsecs --, dst += SECTSIZE) {
+        if ((ret = idewait(iobase, 1)) != 0) {
             release(&idelock);
             return ret;
         }
-        insl(0x1f0, dst, 512 / 4);
+        insl(iobase, dst, SECTSIZE / 4);
     }
 
     release(&idelock);
@@ -181,29 +230,31 @@ read_secs(uint secno, void *dst, uint nsecs)
 }
 
 int
-write_secs(uint secno, const void *src, uint nsecs)
+write_swap(uint secno, const void *src, uint nsecs)
 {
     acquire(&idelock);
+	
+	uint ideno = SWAP_DEVNO, iobase = IO_BASE1, ioctrl = IO_CTRL1;
+    idewait(IO_BASE1, 0);
 
-    idewait(0);
-    outb(0x3f6, 0);
-    outb(0x1f2, nsecs);
-    outb(0x1f3, secno & 0xff);
-    outb(0x1f4, (secno >> 8) & 0xff);
-    outb(0x1f5, (secno >> 16) & 0xff);
-    outb(0x1f6, 0xe0 | ((secno>>24)&0x0f));
-    outb(0x1f7, IDE_CMD_WRITE);
+	outb(ioctrl + ISA_CTRL, 0);
+    outb(iobase + ISA_SECCNT, nsecs);
+    outb(iobase + ISA_SECTOR, secno & 0xFF);
+    outb(iobase + ISA_CYL_LO, (secno >> 8) & 0xFF);
+    outb(iobase + ISA_CYL_HI, (secno >> 16) & 0xFF);
+    outb(iobase + ISA_SDH, 0xE0 | ((ideno & 1) << 4) | ((secno >> 24) & 0xF));
+    outb(iobase + ISA_COMMAND, IDE_CMD_WRITE);
+
     int ret = 0;
-    for (; nsecs > 0; nsecs --, src += 512) {
-        if ((ret = idewait(0)) != 0) {
+    for (; nsecs > 0; nsecs --, src += SECTSIZE) {
+        if ((ret = idewait(iobase, 1)) != 0) {
             release(&idelock);
             return ret;
         }
-        outsl(0x1f0, src, 512 / 4);
+        outsl(iobase, src, SECTSIZE / 4);
     }
 
     release(&idelock);
     return 0;
 }
-
 

@@ -107,7 +107,7 @@ kfree(char *v)
 
   // Fill with junk to catch dangling refs.
   // memset(v, 1, PGSIZE);
-  cprintf("free %x\n", v2p(v));
+//  cprintf("free %x\n", v2p(v));
   if(kmem.use_lock)
     acquire(&kmem.lock);
   struct run *p = (struct run*)v; // page to free
@@ -148,7 +148,7 @@ kalloc(void)
   struct run *r = QTAILQ_FIRST(&kmem.freelist);
   QTAILQ_REMOVE(&kmem.freelist, r, link);
   kmem.nfreeblock--;
-  cprintf("alloc %x\n", v2p(r));
+//  cprintf("alloc %x\n", v2p(r));
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;

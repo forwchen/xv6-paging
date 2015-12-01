@@ -454,7 +454,7 @@ swapin(uint va)
     pte_t *p = getpte(proc->pgdir, (char*)va);
     if (p == 0) return -1;
     uint pa = PTE_ADDR(*p);
-    read_secs(1024 + (pa>>9), (char *)mem, 8);
+    read_swap(1024 + (pa>>9), (char *)mem, 8);
     *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
     addswap(p);
     return 0;
@@ -476,7 +476,7 @@ int swapout()
 
     uint pa = PTE_ADDR(*p);
     cprintf("swap out %x\n", pa);
-    write_secs(1024 + (pa>>9), (char *)p2v(pa), 8);
+    write_swap(1024 + (pa>>9), (char *)p2v(pa), 8);
     QTAILQ_REMOVE(&fifo.queue, e, link);
     *p ^= PTE_P;
     kfree(p2v(pa));

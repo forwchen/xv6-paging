@@ -209,7 +209,7 @@ ifndef CPUS
 CPUS := 2
 endif
 #QEMUOPTS = -hdb fs.img xv6.img -smp $(CPUS) -m 512 $(QEMUEXTRA)
-QEMUOPTS = -drive file=fs.img,index=1,format=raw -drive file=xv6.img,index=0,format=raw -smp $(CPUS) -m 512 $(QEMUEXTRA)
+QEMUOPTS = -drive file=swap.img,index=2,format=raw -drive file=fs.img,index=1,format=raw -drive file=xv6.img,index=0,format=raw -smp $(CPUS) -m 512 $(QEMUEXTRA)
 qemu: fs.img xv6.img
 	$(QEMU) -serial mon:stdio $(QEMUOPTS)
 
