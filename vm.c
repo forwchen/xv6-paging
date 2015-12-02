@@ -12,17 +12,29 @@ extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
 
-typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_head;
-typedef QTAILQ_ENTRY(swap_entry) list_entry;
+typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_entry;
+typedef QTAILQ_ENTRY(swap_entry) link_entry;
+
+typedef QTAILQ_HEAD(swap_slot_list, swap_slot) list_slot;
+typedef QTAILQ_ENTRY(swap_slot) link_slot;
 
 struct swap_entry{
     pte_t * ptr_pte;
-    list_entry link;
+    link_entry link;
+};
+
+struct swap_slot{
+    pte_t * secno;
+    link_slot link;
 };
 
 struct {
-    list_head queue;
+    list_entry queue;
 } fifo;
+
+struct {
+    list_slot queue;
+} slots;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -276,7 +288,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     memset(mem, 0, PGSIZE);
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
-    if (*p &PTE_U) addswap(p);
+    if (a > PGROUNDUP(oldsz)) if (*p &PTE_U) addswap(p);
   }
   return newsz;
 }
@@ -382,7 +394,7 @@ copyuvm(pde_t *pgdir, uint sz)
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
-    if (*p &PTE_U) addswap(p);
+    if (i>0) if (*p &PTE_U) addswap(p);
   }
   return d;
 
@@ -454,7 +466,8 @@ swapin(uint va)
     pte_t *p = getpte(proc->pgdir, (char*)va);
     if (p == 0) return -1;
     uint pa = PTE_ADDR(*p);
-    read_swap(1024 + (pa>>9), (char *)mem, 8);
+    cprintf("swap in %x\n", pa);
+    read_swap((pa>>9), (char *)mem, 8);
     *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
     addswap(p);
     return 0;
@@ -476,7 +489,7 @@ int swapout()
 
     uint pa = PTE_ADDR(*p);
     cprintf("swap out %x\n", pa);
-    write_swap(1024 + (pa>>9), (char *)p2v(pa), 8);
+    write_swap((pa>>9), (char *)p2v(pa), 8);
     QTAILQ_REMOVE(&fifo.queue, e, link);
     *p ^= PTE_P;
     kfree(p2v(pa));

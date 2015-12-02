@@ -10,31 +10,31 @@
 #include "spinlock.h"
 #include "qemu-queue.h"
 
-#define SLABSIZE 32
+#define SLABSIZE 16
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
 
-typedef QTAILQ_HEAD(run_list, run) list_head;
-typedef QTAILQ_ENTRY(run) list_entry;
+typedef QTAILQ_HEAD(run_list, run) list_run;
+typedef QTAILQ_ENTRY(run) link_run;
 
 struct run {
   uint size; // size in bytes
-  list_entry link;
+  link_run link;
 };
 
 struct {
   struct spinlock lock;
   int use_lock;
   uint nfreeblock;
-  list_head freelist;
+  list_run freelist;
 } kmem;
 
 struct {
   struct spinlock lock;
   int use_lock;
   uint nfreeblock;
-  list_head freelist;
+  list_run freelist;
 } slab;
 
 // Initialization happens in two phases.
