@@ -10,7 +10,7 @@
 #include "spinlock.h"
 #include "qemu-queue.h"
 
-#define SLABSIZE 16
+#define SLABSIZE 32
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file

@@ -21,7 +21,7 @@ exec(char *path, char **argv)
     return -1;
   ilock(ip);
   pgdir = 0;
-
+  cprintf("exec\n");
   // Check ELF header
   if(readi(ip, (char*)&elf, 0, sizeof(elf)) < sizeof(elf))
     goto bad;
@@ -79,7 +79,6 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(proc->name, last, sizeof(proc->name));
-
   // Commit to the user image.
   oldpgdir = proc->pgdir;
   proc->pgdir = pgdir;
@@ -87,12 +86,12 @@ exec(char *path, char **argv)
   proc->tf->eip = elf.entry;  // main
   proc->tf->esp = sp;
   switchuvm(proc);
-  freevm(oldpgdir);
+  freevm(oldpgdir, proc->pid);
   return 0;
 
  bad:
   if(pgdir)
-    freevm(pgdir);
+    freevm(pgdir, proc->pid);
   if(ip)
     iunlockput(ip);
   return -1;

@@ -8,6 +8,10 @@
 #include "elf.h"
 #include "qemu-queue.h"
 
+#define SWAPSIZE 0x8000000 //128MB swap area
+#define SLOTSIZE SWAPSIZE/PGSIZE // number of slots
+uint swap_map[SLOTSIZE];
+
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
@@ -15,26 +19,15 @@ struct segdesc gdt[NSEGS];
 typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_entry;
 typedef QTAILQ_ENTRY(swap_entry) link_entry;
 
-typedef QTAILQ_HEAD(swap_slot_list, swap_slot) list_slot;
-typedef QTAILQ_ENTRY(swap_slot) link_slot;
-
 struct swap_entry{
     pte_t * ptr_pte;
+    uint pn_pid;
     link_entry link;
-};
-
-struct swap_slot{
-    pte_t * secno;
-    link_slot link;
 };
 
 struct {
     list_entry queue;
 } fifo;
-
-struct {
-    list_slot queue;
-} slots;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -89,11 +82,47 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
   return &pgtab[PTX(va)];
 }
 
+uint
+alloc_slot(uint pn_pid)
+{
+    uint i = 0;
+    for (; i < SLOTSIZE; i++)
+    {
+        if (swap_map[i] == 0) break;
+    }
+    if (i == SLOTSIZE)
+        panic("swap: no free slot");
+    swap_map[i] = pn_pid;
+    return i;
+}
+
+uint
+get_slot(uint pn_pid)
+{
+    uint i = 0;
+    for (; i < SLOTSIZE; i++)
+        if (swap_map[i] == pn_pid) return i;
+    return -1;
+}
+
 void
-addswap(pte_t *p)
+rm_slot(uint pn_pid)
+{
+    uint i = 0;
+    for (; i < SLOTSIZE; i++)
+        if (swap_map[i] == pn_pid)
+        {
+            swap_map[i] = 0;
+            break;
+        }
+}
+
+void
+add_swap(pte_t *p, uint pid)
 {
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
+    e->pn_pid = PTE_ADDR(*p) | (pid << 1);
     QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
 }
 
@@ -276,33 +305,36 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     return 0;
   if(newsz < oldsz)
     return oldsz;
-
   a = PGROUNDUP(oldsz);
   for(; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
       cprintf("allocuvm out of memory\n");
-      deallocuvm(pgdir, newsz, oldsz);
+      deallocuvm(pgdir, newsz, oldsz, proc->pid);
       return 0;
     }
-    memset(mem, 0, PGSIZE);
+    cprintf("alloc %d %x\n", proc->pid, mem);
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
-    if (a > PGROUNDUP(oldsz)) if (*p &PTE_U) addswap(p);
+    if (a > PGROUNDUP(oldsz)) if (*p &PTE_U) add_swap(p, proc->pid);
   }
   return newsz;
 }
 
 void
-removeswap(pte_t *p)
+rm_swap(uint p)
 {
     struct swap_entry *e;
+    uint found = 0;
     QTAILQ_FOREACH(e, &fifo.queue, link) {
-        if (e->ptr_pte == p) {
+        if (e->pn_pid == p) {
             QTAILQ_REMOVE(&fifo.queue, e, link);
+            found = 1;
             break;
         }
     }
+    if (found == 0) cprintf("not found\n");
+    else cprintf("found\n");
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -310,7 +342,7 @@ removeswap(pte_t *p)
 // need to be less than oldsz.  oldsz can be larger than the actual
 // process size.  Returns the new process size.
 int
-deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
 {
   pte_t *pte;
   uint a, pa;
@@ -323,11 +355,12 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
-      removeswap(pte);
+      rm_swap(PTE_ADDR(*pte)|(pid<<1));
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
       char *v = p2v(pa);
+      cprintf("dealloc %d %x\n", pid, v);
       kfree(v);
       *pte = 0;
     }
@@ -338,13 +371,13 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 // Free a page table and all the physical memory pages
 // in the user part.
 void
-freevm(pde_t *pgdir)
+freevm(pde_t *pgdir, uint pid)
 {
   uint i;
-
+  cprintf("free\n");
   if(pgdir == 0)
     panic("freevm: no pgdir");
-  deallocuvm(pgdir, KERNBASE, 0);
+  deallocuvm(pgdir, KERNBASE, 0, pid);
   for(i = 0; i < NPDENTRIES; i++){
     if(pgdir[i] & PTE_P){
       char * v = p2v(PTE_ADDR(pgdir[i]));
@@ -370,7 +403,7 @@ clearpteu(pde_t *pgdir, char *uva)
 // Given a parent process's page table, create a copy
 // of it for a child.
 pde_t*
-copyuvm(pde_t *pgdir, uint sz)
+copyuvm(pde_t *pgdir, uint sz, uint pid)
 {
   pde_t *d;
   pte_t *pte;
@@ -394,12 +427,14 @@ copyuvm(pde_t *pgdir, uint sz)
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
-    if (i>0) if (*p &PTE_U) addswap(p);
+    if (i>0) if (*p &PTE_U) add_swap(p, pid);
+
+    cprintf("copy alloc %d %x\n", pid, mem);
   }
   return d;
 
 bad:
-  freevm(d);
+  freevm(d, proc->pid);
   return 0;
 }
 
@@ -467,9 +502,11 @@ swapin(uint va)
     if (p == 0) return -1;
     uint pa = PTE_ADDR(*p);
     cprintf("swap in %x\n", pa);
-    read_swap((pa>>9), (char *)mem, 8);
+    uint slotn = get_slot(*p);  // get the slot id using pte
+    read_swap(slotn, (char *)mem, 8); // read in page
+    rm_slot(*p);  // release slot
     *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
-    addswap(p);
+    add_swap(p, proc->pid);
     return 0;
 }
 
@@ -479,20 +516,27 @@ swapinit()
     QTAILQ_INIT(&fifo.queue);
 }
 
+struct swap_entry *
+get_swap()
+{
+    struct swap_entry *e = QTAILQ_FIRST(&fifo.queue);
+    return e;
+}
+
 int swapout()
 {
     if (QTAILQ_EMPTY(&fifo.queue)) {
         panic("nothing to swapout");
     }
-    struct swap_entry * e = QTAILQ_FIRST(&fifo.queue);
-    pte_t * p = e->ptr_pte;
+    struct swap_entry *e = get_swap();
+    pte_t *p = e->ptr_pte;
 
     uint pa = PTE_ADDR(*p);
+    *p = e->pn_pid; // set present bit to 0, and store index
+    uint slotn = alloc_slot(e->pn_pid);
+    write_swap(slotn<<3, (char *)p2v(pa), 8);  //write page to disk
+    kfree(p2v(pa));  // free memory
+    rm_swap(e->pn_pid);  // remove swap entry
     cprintf("swap out %x\n", pa);
-    write_swap((pa>>9), (char *)p2v(pa), 8);
-    QTAILQ_REMOVE(&fifo.queue, e, link);
-    *p ^= PTE_P;
-    kfree(p2v(pa));
     return 1;
 }
-
