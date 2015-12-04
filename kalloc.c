@@ -139,9 +139,8 @@ free_slab(char *v)
 char*
 kalloc(void)
 {
-  if (kmem.nfreeblock == 0){
-      if (swapout() == 0) return 0;
-  }
+  if (kmem.nfreeblock == 0)
+      swap_out();
   if(kmem.use_lock)
     acquire(&kmem.lock);
 

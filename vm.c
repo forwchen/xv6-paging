@@ -122,7 +122,7 @@ add_swap(pte_t *p, uint pid)
 {
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
-    e->pn_pid = PTE_ADDR(*p) | (pid << 1);
+    e->pn_pid = PTE_ADDR(*p) | (pid<<1);
     QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
 }
 
@@ -313,10 +313,11 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       deallocuvm(pgdir, newsz, oldsz, proc->pid);
       return 0;
     }
-    cprintf("alloc %d %x\n", proc->pid, mem);
+    //cprintf("alloc %d %x\n", proc->pid, mem);
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
-    if (a > PGROUNDUP(oldsz)) if (*p &PTE_U) add_swap(p, proc->pid);
+    if (a > PGROUNDUP(oldsz))
+        if (*p &PTE_U) add_swap(p, proc->pid);
   }
   return newsz;
 }
@@ -325,16 +326,12 @@ void
 rm_swap(uint p)
 {
     struct swap_entry *e;
-    uint found = 0;
     QTAILQ_FOREACH(e, &fifo.queue, link) {
         if (e->pn_pid == p) {
             QTAILQ_REMOVE(&fifo.queue, e, link);
-            found = 1;
             break;
         }
     }
-    if (found == 0) cprintf("not found\n");
-    else cprintf("found\n");
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -360,7 +357,7 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
       if(pa == 0)
         panic("kfree");
       char *v = p2v(pa);
-      cprintf("dealloc %d %x\n", pid, v);
+      //cprintf("dealloc %d %x\n", pid, v);
       kfree(v);
       *pte = 0;
     }
@@ -374,7 +371,6 @@ void
 freevm(pde_t *pgdir, uint pid)
 {
   uint i;
-  cprintf("free\n");
   if(pgdir == 0)
     panic("freevm: no pgdir");
   deallocuvm(pgdir, KERNBASE, 0, pid);
@@ -416,7 +412,7 @@ copyuvm(pde_t *pgdir, uint sz, uint pid)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
     {
-        swapin(i);
+        swap_in(i);
       //panic("copyuvm: page not present");
     }
     pa = PTE_ADDR(*pte);
@@ -427,9 +423,9 @@ copyuvm(pde_t *pgdir, uint sz, uint pid)
     if(mappages(d, (void*)i, PGSIZE, v2p(mem), flags) < 0)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
-    if (i>0) if (*p &PTE_U) add_swap(p, pid);
-
-    cprintf("copy alloc %d %x\n", pid, mem);
+    if (i>0)
+        if (*p &PTE_U) add_swap(p, pid);
+    //cprintf("copy alloc %d %x\n", pid, mem);
   }
   return d;
 
@@ -486,28 +482,30 @@ do_pgflt(uint va)
     cprintf("fault addr %x\n", va);
     if (va < KERNBASE + proc->sz)
     {
-        return swapin(va);
+        swap_in(va);
+        return 0;
     }
     else
       return -1;
 }
 
-int
-swapin(uint va)
+void
+swap_in(uint va)
 {
     char *mem = kalloc();
-    if (mem ==0) return -1;
+    if (mem == 0)
+        panic("swap: no memory to swap in");
 
-    pte_t *p = getpte(proc->pgdir, (char*)va);
-    if (p == 0) return -1;
-    uint pa = PTE_ADDR(*p);
+    pte_t *p = getpte(proc->pgdir, (char*)va);      // get pte
+    if (p == 0)
+        panic("swap: pte should exist");
+    uint pa = PTE_ADDR(*p);                         // get memory address
+    uint slotn = get_slot(pa | (proc->pid<<1));     // get the slot id using pte
+    read_swap(slotn<<3, (char *)mem, 8);            // read in page
+    rm_slot(*p);                                    // release slot
+    *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
+    add_swap(p, proc->pid);                         // add to swappable list
     cprintf("swap in %x\n", pa);
-    uint slotn = get_slot(*p);  // get the slot id using pte
-    read_swap(slotn, (char *)mem, 8); // read in page
-    rm_slot(*p);  // release slot
-    *p = v2p(mem) | PTE_FLAGS(*p) | PTE_P;
-    add_swap(p, proc->pid);
-    return 0;
 }
 
 void
@@ -519,24 +517,23 @@ swapinit()
 struct swap_entry *
 get_swap()
 {
-    struct swap_entry *e = QTAILQ_FIRST(&fifo.queue);
+    struct swap_entry *e = QTAILQ_FIRST(&fifo.queue); // fifo algo
     return e;
 }
 
-int swapout()
+void
+swap_out()
 {
     if (QTAILQ_EMPTY(&fifo.queue)) {
-        panic("nothing to swapout");
+        panic("swap: nothing to swapout");
     }
-    struct swap_entry *e = get_swap();
-    pte_t *p = e->ptr_pte;
-
-    uint pa = PTE_ADDR(*p);
-    *p = e->pn_pid; // set present bit to 0, and store index
-    uint slotn = alloc_slot(e->pn_pid);
-    write_swap(slotn<<3, (char *)p2v(pa), 8);  //write page to disk
-    kfree(p2v(pa));  // free memory
-    rm_swap(e->pn_pid);  // remove swap entry
+    struct swap_entry *e = get_swap();              // get a page to swap out
+    pte_t *p = e->ptr_pte;                          // get pte
+    uint pa = PTE_ADDR(*p);                         // get memory address
+    *p ^= PTE_P;                                    // set present bit to 0
+    uint slotn = alloc_slot(e->pn_pid);             // alloc a slot on disk
+    write_swap(slotn<<3, (char *)p2v(pa), 8);       // write page to disk
+    kfree(p2v(pa));                                 // free memory
+    rm_swap(e->pn_pid);                             // remove swap entry
     cprintf("swap out %x\n", pa);
-    return 1;
 }

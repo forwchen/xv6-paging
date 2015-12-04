@@ -108,7 +108,6 @@ int
 growproc(int n)
 {
   uint sz;
-  cprintf("grow\n");
   sz = proc->sz;
   if(n > 0){
     if((sz = allocuvm(proc->pgdir, sz, sz + n)) == 0)

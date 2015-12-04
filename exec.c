@@ -21,7 +21,6 @@ exec(char *path, char **argv)
     return -1;
   ilock(ip);
   pgdir = 0;
-  cprintf("exec\n");
   // Check ELF header
   if(readi(ip, (char*)&elf, 0, sizeof(elf)) < sizeof(elf))
     goto bad;
