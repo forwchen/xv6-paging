@@ -122,7 +122,7 @@ add_swap(pte_t *p, uint pid)
 {
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
-    e->pn_pid = PTE_ADDR(*p) | (pid<<1);
+    e->pn_pid = PTE_ADDR(*p) | (pid);
     QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
 }
 
@@ -352,7 +352,7 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
-      rm_swap(PTE_ADDR(*pte)|(pid<<1));
+      rm_swap(PTE_ADDR(*pte)|(pid));
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
@@ -500,7 +500,7 @@ swap_in(uint va)
     if (p == 0)
         panic("swap: pte should exist");
     uint pa = PTE_ADDR(*p);                         // get memory address
-    uint slotn = get_slot(pa | (proc->pid<<1));     // get the slot id using pte
+    uint slotn = get_slot(pa | (proc->pid));     // get the slot id using pte
     read_swap(slotn<<3, (char *)mem, 8);            // read in page
     rm_slot(*p);                                    // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
