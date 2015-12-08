@@ -7,10 +7,12 @@
 #include "proc.h"
 #include "elf.h"
 #include "qemu-queue.h"
+#include "spinlock.h"
 
 #define SWAPSIZE 0x8000000 //128MB swap area
 #define SLOTSIZE SWAPSIZE/PGSIZE // number of slots
 uint swap_map[SLOTSIZE];
+struct spinlock lock_map;
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -27,6 +29,7 @@ struct swap_entry{
 
 struct {
     list_entry queue;
+    struct spinlock lock;
 } fifo;
 
 // Set up CPU's kernel segment descriptors.
@@ -85,6 +88,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 uint
 alloc_slot(uint pn_pid)
 {
+    acquire(&lock_map);
     uint i = 0;
     for (; i < SLOTSIZE; i++)
     {
@@ -93,6 +97,7 @@ alloc_slot(uint pn_pid)
     if (i == SLOTSIZE)
         panic("swap: no free slot");
     swap_map[i] = pn_pid;
+    release(&lock_map);
     return i;
 }
 
@@ -101,13 +106,15 @@ get_slot(uint pn_pid)
 {
     uint i = 0;
     for (; i < SLOTSIZE; i++)
-        if (swap_map[i] == pn_pid) return i;
+        if (swap_map[i] == pn_pid)
+            return i;
     return -1;
 }
 
 void
 rm_slot(uint pn_pid)
 {
+    acquire(&lock_map);
     uint i = 0;
     for (; i < SLOTSIZE; i++)
         if (swap_map[i] == pn_pid)
@@ -115,15 +122,18 @@ rm_slot(uint pn_pid)
             swap_map[i] = 0;
             break;
         }
+    release(&lock_map);
 }
 
 void
 add_swap(pte_t *p, uint pid)
 {
+    acquire(&fifo.lock);
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
     e->pn_pid = PTE_ADDR(*p) | (pid);
     QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
+    release(&fifo.lock);
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -325,6 +335,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 void
 rm_swap(uint p)
 {
+    acquire(&fifo.lock);
     struct swap_entry *e;
     QTAILQ_FOREACH(e, &fifo.queue, link) {
         if (e->pn_pid == p) {
@@ -332,6 +343,7 @@ rm_swap(uint p)
             break;
         }
     }
+    release(&fifo.lock);
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -505,19 +517,23 @@ swap_in(uint va)
     rm_slot(*p);                                    // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
     add_swap(p, proc->pid);                         // add to swappable list
-    cprintf("swap in %x\n", pa);
+    cprintf("swap in %x\n", va);
 }
 
 void
 swapinit()
 {
     QTAILQ_INIT(&fifo.queue);
+    initlock(&lock_map, "map");
+    initlock(&fifo.lock, "queue");
 }
 
 struct swap_entry *
 get_swap()
 {
+    acquire(&fifo.lock);
     struct swap_entry *e = QTAILQ_FIRST(&fifo.queue); // fifo algo
+    release(&fifo.lock);
     return e;
 }
 
@@ -535,5 +551,5 @@ swap_out()
     write_swap(slotn<<3, (char *)p2v(pa), 8);       // write page to disk
     kfree(p2v(pa));                                 // free memory
     rm_swap(e->pn_pid);                             // remove swap entry
-    cprintf("swap out %x\n", pa);
+    cprintf("swap out %x\n", e->pn_pid);
 }

@@ -156,9 +156,9 @@ kalloc(void)
 char*
 alloc_slab(void)
 {
+  if (slab.nfreeblock == 0) slabinit();
   if (slab.use_lock)
     acquire(&slab.lock);
-  if (slab.nfreeblock == 0) slabinit();
   struct run *r = QTAILQ_FIRST(&slab.freelist);
   QTAILQ_REMOVE(&slab.freelist, r, link);
   slab.nfreeblock--;
