@@ -6,7 +6,7 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
-#include "qemu-queue.h"
+#include "queue.h"
 #include "spinlock.h"
 
 #define SWAPSIZE 0x8000000 //128MB swap area
@@ -18,17 +18,17 @@ extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
 
-typedef QTAILQ_HEAD(swap_entry_list, swap_entry) list_entry;
-typedef QTAILQ_ENTRY(swap_entry) link_entry;
+typedef Q_HEAD(swap_entry_list, swap_entry) q_head;
+typedef Q_ENTRY(swap_entry) q_entry;
 
 struct swap_entry{
     pte_t * ptr_pte;
     uint pn_pid;
-    link_entry link;
+    q_entry link;
 };
 
 struct {
-    list_entry queue;
+    q_head queue;
     struct spinlock lock;
 } fifo;
 
@@ -132,8 +132,46 @@ add_swap(pte_t *p, uint pid)
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
     e->pn_pid = PTE_ADDR(*p) | (pid);
-    QTAILQ_INSERT_TAIL(&fifo.queue, e, link);
+    Q_INSERT_TAIL(&fifo.queue, e, link);
     release(&fifo.lock);
+}
+
+void
+rm_swap(uint p)
+{
+    acquire(&fifo.lock);
+    struct swap_entry *e;
+    Q_FOREACH(e, &fifo.queue, link) {
+        if (e->pn_pid == p) {
+            Q_REMOVE(&fifo.queue, e, link);
+            break;
+        }
+    }
+    release(&fifo.lock);
+}
+
+struct swap_entry *
+get_swap()
+{
+    acquire(&fifo.lock);
+    struct swap_entry *e = Q_FIRST(&fifo.queue); // fifo algo
+    release(&fifo.lock);
+    return e;
+}
+
+pte_t *
+getpte(pde_t *pgdir, const void *va)
+{
+    pde_t *pde;
+    pte_t *pgtab;
+
+    pde = &pgdir[PDX(va)];
+    if(*pde & PTE_P){
+        pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
+    } else {
+        return 0;
+    }
+    return &pgtab[PTX(va)];
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -288,21 +326,6 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
   return 0;
 }
 
-pte_t *
-getpte(pde_t *pgdir, const void *va)
-{
-    pde_t *pde;
-    pte_t *pgtab;
-
-    pde = &pgdir[PDX(va)];
-    if(*pde & PTE_P){
-        pgtab = (pte_t*)p2v(PTE_ADDR(*pde));
-    } else {
-        return 0;
-    }
-    return &pgtab[PTX(va)];
-}
-
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 int
@@ -330,20 +353,6 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
         if (*p &PTE_U) add_swap(p, proc->pid);
   }
   return newsz;
-}
-
-void
-rm_swap(uint p)
-{
-    acquire(&fifo.lock);
-    struct swap_entry *e;
-    QTAILQ_FOREACH(e, &fifo.queue, link) {
-        if (e->pn_pid == p) {
-            QTAILQ_REMOVE(&fifo.queue, e, link);
-            break;
-        }
-    }
-    release(&fifo.lock);
 }
 
 // Deallocate user pages to bring the process size from oldsz to
@@ -502,6 +511,14 @@ do_pgflt(uint va)
 }
 
 void
+swapinit()
+{
+    Q_INIT(&fifo.queue);
+    initlock(&lock_map, "map");
+    initlock(&fifo.lock, "queue");
+}
+
+void
 swap_in(uint va)
 {
     char *mem = kalloc();
@@ -521,27 +538,10 @@ swap_in(uint va)
 }
 
 void
-swapinit()
-{
-    QTAILQ_INIT(&fifo.queue);
-    initlock(&lock_map, "map");
-    initlock(&fifo.lock, "queue");
-}
-
-struct swap_entry *
-get_swap()
-{
-    acquire(&fifo.lock);
-    struct swap_entry *e = QTAILQ_FIRST(&fifo.queue); // fifo algo
-    release(&fifo.lock);
-    return e;
-}
-
-void
 swap_out()
 {
-    if (QTAILQ_EMPTY(&fifo.queue)) {
-        panic("swap: nothing to swapout");
+    if (Q_EMPTY(&fifo.queue)) {
+        panic("swap: no page to swapout");
     }
     struct swap_entry *e = get_swap();              // get a page to swap out
     pte_t *p = e->ptr_pte;                          // get pte

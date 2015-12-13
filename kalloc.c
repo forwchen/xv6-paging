@@ -8,33 +8,33 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "spinlock.h"
-#include "qemu-queue.h"
+#include "queue.h"
 
 #define SLABSIZE 32
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
 
-typedef QTAILQ_HEAD(run_list, run) list_run;
-typedef QTAILQ_ENTRY(run) link_run;
+typedef Q_HEAD(run_list, run) q_head;
+typedef Q_ENTRY(run) q_entry;
 
 struct run {
   uint size; // size in bytes
-  link_run link;
+  q_entry link;
 };
 
 struct {
   struct spinlock lock;
   int use_lock;
   uint nfreeblock;
-  list_run freelist;
+  q_head freelist;
 } kmem;
 
 struct {
   struct spinlock lock;
   int use_lock;
   uint nfreeblock;
-  list_run freelist;
+  q_head freelist;
 } slab;
 
 // Initialization happens in two phases.
@@ -47,10 +47,10 @@ kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   initlock(&slab.lock, "slab");
-  QTAILQ_INIT(&kmem.freelist);
+  Q_INIT(&kmem.freelist);
   kmem.use_lock = 0;
   kmem.nfreeblock = 0;
-  QTAILQ_INIT(&slab.freelist);
+  Q_INIT(&slab.freelist);
   slab.use_lock = 0;
   slab.nfreeblock = 0;
   freerange(vstart, vend);
@@ -85,12 +85,12 @@ freerange(void *vstart, void *vend)
 
 void print_mem()
 {
-  struct run *r = QTAILQ_FIRST(&kmem.freelist);
+  struct run *r = Q_FIRST(&kmem.freelist);
   int count = 0;
   while (count < kmem.nfreeblock) {
     cprintf("%x\t\t\t%d\n", r, r->size);
     count ++;
-    r = QTAILQ_NEXT(r, link);
+    r = Q_NEXT(r, link);
   }
 }
 
@@ -112,7 +112,7 @@ kfree(char *v)
     acquire(&kmem.lock);
   struct run *p = (struct run*)v; // page to free
   p->size = PGSIZE;
-  QTAILQ_INSERT_HEAD(&kmem.freelist, p, link);
+  Q_INSERT_HEAD(&kmem.freelist, p, link);
   kmem.nfreeblock ++;
 
   if(kmem.use_lock)
@@ -126,7 +126,7 @@ free_slab(char *v)
       acquire(&slab.lock);
   struct run *p = (struct run*)v;
   p->size = SLABSIZE;
-  QTAILQ_INSERT_HEAD(&slab.freelist, p, link);
+  Q_INSERT_HEAD(&slab.freelist, p, link);
   slab.nfreeblock ++;
 
   if (slab.use_lock)
@@ -144,8 +144,8 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
 
-  struct run *r = QTAILQ_FIRST(&kmem.freelist);
-  QTAILQ_REMOVE(&kmem.freelist, r, link);
+  struct run *r = Q_FIRST(&kmem.freelist);
+  Q_REMOVE(&kmem.freelist, r, link);
   kmem.nfreeblock--;
 //  cprintf("alloc %x\n", v2p(r));
   if(kmem.use_lock)
@@ -159,13 +159,11 @@ alloc_slab(void)
   if (slab.nfreeblock == 0) slabinit();
   if (slab.use_lock)
     acquire(&slab.lock);
-  struct run *r = QTAILQ_FIRST(&slab.freelist);
-  QTAILQ_REMOVE(&slab.freelist, r, link);
+  struct run *r = Q_FIRST(&slab.freelist);
+  Q_REMOVE(&slab.freelist, r, link);
   slab.nfreeblock--;
 
   if (slab.use_lock)
     release(&slab.lock);
   return (char*)r;
 }
-
-
