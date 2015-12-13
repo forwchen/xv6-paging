@@ -9,10 +9,8 @@
 #include "queue.h"
 #include "spinlock.h"
 
-#define SWAPSIZE 0x8000000 //128MB swap area
-#define SLOTSIZE SWAPSIZE/PGSIZE // number of slots
-uint swap_map[SLOTSIZE];
-struct spinlock lock_map;
+#define SWAPSIZE 0x8000000  //128MB swap area
+#define SLOTSIZE SWAPSIZE/PGSIZE  // number of slots
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -31,6 +29,11 @@ struct {
     q_head queue;
     struct spinlock lock;
 } fifo;
+
+struct {
+    uint slots[SLOTSIZE];
+    struct spinlock lock;
+} swap_map;
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -88,16 +91,16 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 uint
 alloc_slot(uint pn_pid)
 {
-    acquire(&lock_map);
+    acquire(&swap_map.lock);
     uint i = 0;
     for (; i < SLOTSIZE; i++)
     {
-        if (swap_map[i] == 0) break;
+        if (swap_map.slots[i] == 0) break;
     }
     if (i == SLOTSIZE)
         panic("swap: no free slot");
-    swap_map[i] = pn_pid;
-    release(&lock_map);
+    swap_map.slots[i] = pn_pid;
+    release(&swap_map.lock);
     return i<<3;
 }
 
@@ -106,7 +109,7 @@ get_slot(uint pn_pid)
 {
     uint i = 0;
     for (; i < SLOTSIZE; i++)
-        if (swap_map[i] == pn_pid)
+        if (swap_map.slots[i] == pn_pid)
             return i<<3;
     return -1;
 }
@@ -114,15 +117,15 @@ get_slot(uint pn_pid)
 void
 rm_slot(uint pn_pid)
 {
-    acquire(&lock_map);
+    acquire(&swap_map.lock);
     uint i = 0;
     for (; i < SLOTSIZE; i++)
-        if (swap_map[i] == pn_pid)
+        if (swap_map.slots[i] == pn_pid)
         {
-            swap_map[i] = 0;
+            swap_map.slots[i] = 0;
             break;
         }
-    release(&lock_map);
+    release(&swap_map.lock);
 }
 
 void
@@ -514,7 +517,7 @@ void
 swapinit()
 {
     Q_INIT(&fifo.queue);
-    initlock(&lock_map, "map");
+    initlock(&swap_map.lock, "swap_map");
     initlock(&fifo.lock, "queue");
 }
 
