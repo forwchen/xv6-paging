@@ -98,7 +98,7 @@ alloc_slot(uint pn_pid)
         panic("swap: no free slot");
     swap_map[i] = pn_pid;
     release(&lock_map);
-    return i;
+    return i<<3;
 }
 
 uint
@@ -107,7 +107,7 @@ get_slot(uint pn_pid)
     uint i = 0;
     for (; i < SLOTSIZE; i++)
         if (swap_map[i] == pn_pid)
-            return i;
+            return i<<3;
     return -1;
 }
 
@@ -525,12 +525,12 @@ swap_in(uint va)
     if (mem == 0)
         panic("swap: no memory to swap in");
 
-    pte_t *p = getpte(proc->pgdir, (char*)va);      // get pte
+    pte_t *p = getpte(proc->pgdir, (char*)va);      // get PTE
     if (p == 0)
         panic("swap: pte should exist");
     uint pa = PTE_ADDR(*p);                         // get memory address
-    uint slotn = get_slot(pa | (proc->pid));     // get the slot id using pte
-    read_swap(slotn<<3, (char *)mem, 8);            // read in page
+    uint slotn = get_slot(pa | (proc->pid));        // get the slot id using pte
+    read_swap(slotn, (char *)mem);                  // read in page
     rm_slot(*p);                                    // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
     add_swap(p, proc->pid);                         // add to swappable list
@@ -544,11 +544,11 @@ swap_out()
         panic("swap: no page to swapout");
     }
     struct swap_entry *e = get_swap();              // get a page to swap out
-    pte_t *p = e->ptr_pte;                          // get pte
+    pte_t *p = e->ptr_pte;                          // get PTE
     uint pa = PTE_ADDR(*p);                         // get memory address
     *p ^= PTE_P;                                    // set present bit to 0
     uint slotn = alloc_slot(e->pn_pid);             // alloc a slot on disk
-    write_swap(slotn<<3, (char *)p2v(pa), 8);       // write page to disk
+    write_swap(slotn, (char *)p2v(pa));             // write page to disk
     kfree(p2v(pa));                                 // free memory
     rm_swap(e->pn_pid);                             // remove swap entry
     cprintf("swap out %x\n", e->pn_pid);

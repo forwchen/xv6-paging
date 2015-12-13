@@ -201,11 +201,12 @@ iderw(struct buf *b)
 }
 
 int
-read_swap(uint secno, void *dst, uint nsecs)
+read_swap(uint secno, void *dst)
 {
     acquire(&idelock);
 
 	uint ideno = SWAP_DEVNO, iobase = IO_BASE1, ioctrl = IO_CTRL1;
+    uint nsecs = 8;
     idewait(IO_BASE1, 0);
 
     outb(ioctrl + ISA_CTRL, 0);
@@ -230,11 +231,12 @@ read_swap(uint secno, void *dst, uint nsecs)
 }
 
 int
-write_swap(uint secno, const void *src, uint nsecs)
+write_swap(uint secno, const void *src)
 {
     acquire(&idelock);
-	
+
 	uint ideno = SWAP_DEVNO, iobase = IO_BASE1, ioctrl = IO_CTRL1;
+    uint nsecs = 8;
     idewait(IO_BASE1, 0);
 
 	outb(ioctrl + ISA_CTRL, 0);
@@ -257,4 +259,3 @@ write_swap(uint secno, const void *src, uint nsecs)
     release(&idelock);
     return 0;
 }
-

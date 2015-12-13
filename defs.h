@@ -55,8 +55,8 @@ int             writei(struct inode*, char*, uint, uint);
 void            ideinit(void);
 void            ideintr(void);
 void            iderw(struct buf*);
-int             read_swap(uint, void *, uint);
-int             write_swap(uint, const void *, uint);
+int             read_swap(uint, void *);
+int             write_swap(uint, const void *);
 
 // ioapic.c
 void            ioapicenable(int irq, int cpu);
@@ -188,4 +188,3 @@ pde_t*          getpte(pde_t *, const void *);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
-
