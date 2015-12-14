@@ -140,7 +140,7 @@ char*
 kalloc(void)
 {
   if (kmem.nfreeblock == 0)
-      swap_out();
+      page_out();
   if(kmem.use_lock)
     acquire(&kmem.lock);
 

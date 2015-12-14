@@ -182,8 +182,8 @@ int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 int             do_pgflt(uint);
 void            swapinit(void);
-void            swap_out(void);
-void            swap_in(uint);
+void            page_out(void);
+void            page_in(uint);
 pde_t*          getpte(pde_t *, const void *);
 
 // number of elements in fixed-size array

@@ -129,7 +129,7 @@ rm_slot(uint pn_pid)
 }
 
 void
-add_swap(pte_t *p, uint pid)
+add_page(pte_t *p, uint pid)
 {
     acquire(&fifo.lock);
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
@@ -140,7 +140,7 @@ add_swap(pte_t *p, uint pid)
 }
 
 void
-rm_swap(uint p)
+rm_page(uint p)
 {
     acquire(&fifo.lock);
     struct swap_entry *e;
@@ -154,7 +154,7 @@ rm_swap(uint p)
 }
 
 struct swap_entry *
-get_swap()
+get_page()
 {
     acquire(&fifo.lock);
     struct swap_entry *e = Q_FIRST(&fifo.queue); // fifo algo
@@ -353,7 +353,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
     if (a > PGROUNDUP(oldsz))
-        if (*p &PTE_U) add_swap(p, proc->pid);
+        if (*p &PTE_U) add_page(p, proc->pid);
   }
   return newsz;
 }
@@ -376,7 +376,7 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
-      rm_swap(PTE_ADDR(*pte)|(pid));
+      rm_page(PTE_ADDR(*pte)|(pid));
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
@@ -436,7 +436,7 @@ copyuvm(pde_t *pgdir, uint sz, uint pid)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
     {
-        swap_in(i);
+        page_in(i);
       //panic("copyuvm: page not present");
     }
     pa = PTE_ADDR(*pte);
@@ -448,7 +448,7 @@ copyuvm(pde_t *pgdir, uint sz, uint pid)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
     if (i>0)
-        if (*p &PTE_U) add_swap(p, pid);
+        if (*p &PTE_U) add_page(p, pid);
     //cprintf("copy alloc %d %x\n", pid, mem);
   }
   return d;
@@ -506,7 +506,7 @@ do_pgflt(uint va)
     cprintf("fault addr %x\n", va);
     if (va < KERNBASE + proc->sz)
     {
-        swap_in(va);
+        page_in(va);
         return 0;
     }
     else
@@ -522,11 +522,11 @@ swapinit()
 }
 
 void
-swap_in(uint va)
+page_in(uint va)
 {
     char *mem = kalloc();
     if (mem == 0)
-        panic("swap: no memory to swap in");
+        panic("swap: no memory to page in");
 
     pte_t *p = getpte(proc->pgdir, (char*)va);      // get PTE
     if (p == 0)
@@ -536,23 +536,23 @@ swap_in(uint va)
     read_swap(slotn, (char *)mem);                  // read in page
     rm_slot(*p);                                    // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
-    add_swap(p, proc->pid);                         // add to swappable list
+    add_page(p, proc->pid);                         // add to swappable list
     cprintf("swap in %x\n", va);
 }
 
 void
-swap_out()
+page_out()
 {
     if (Q_EMPTY(&fifo.queue)) {
-        panic("swap: no page to swapout");
+        panic("swap: no page to page out");
     }
-    struct swap_entry *e = get_swap();              // get a page to swap out
+    struct swap_entry *e = get_page();              // get a page to swap out
     pte_t *p = e->ptr_pte;                          // get PTE
     uint pa = PTE_ADDR(*p);                         // get memory address
     *p ^= PTE_P;                                    // set present bit to 0
     uint slotn = alloc_slot(e->pn_pid);             // alloc a slot on disk
     write_swap(slotn, (char *)p2v(pa));             // write page to disk
     kfree(p2v(pa));                                 // free memory
-    rm_swap(e->pn_pid);                             // remove swap entry
+    rm_page(e->pn_pid);                             // remove swap entry
     cprintf("swap out %x\n", e->pn_pid);
 }
