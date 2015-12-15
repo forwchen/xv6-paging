@@ -21,6 +21,8 @@ typedef Q_ENTRY(swap_entry) q_entry;
 
 struct swap_entry{
     pte_t * ptr_pte;
+    // we can't actually use pointer to pte
+    // because in page_out, it's not the same page table
     uint pn_pid;
     q_entry link;
 };
@@ -115,16 +117,12 @@ get_slot(uint pn_pid)
 }
 
 void
-rm_slot(uint pn_pid)
+rm_slot(uint slotn)
 {
     acquire(&swap_map.lock);
-    uint i = 0;
-    for (; i < SLOTSIZE; i++)
-        if (swap_map.slots[i] == pn_pid)
-        {
-            swap_map.slots[i] = 0;
-            break;
-        }
+    uint i = slotn>>3;
+    if (i >= SLOTSIZE) return;
+    swap_map.slots[i] = 0;
     release(&swap_map.lock);
 }
 
@@ -140,12 +138,12 @@ add_page(pte_t *p, uint pid)
 }
 
 void
-rm_page(uint p)
+rm_page(uint pn_pid)
 {
     acquire(&fifo.lock);
     struct swap_entry *e;
     Q_FOREACH(e, &fifo.queue, link) {
-        if (e->pn_pid == p) {
+        if (e->pn_pid == pn_pid) {
             Q_REMOVE(&fifo.queue, e, link);
             break;
         }
@@ -158,6 +156,9 @@ get_page()
 {
     acquire(&fifo.lock);
     struct swap_entry *e = Q_FIRST(&fifo.queue); // fifo algo
+
+
+
     release(&fifo.lock);
     return e;
 }
@@ -535,7 +536,7 @@ page_in(uint va)
     uint pa = PTE_ADDR(*p);                         // get memory address
     uint slotn = get_slot(pa | (proc->pid));        // get the slot id using pte
     read_swap(slotn, (char *)mem);                  // read in page
-    rm_slot(*p);                                    // release slot
+    rm_slot(slotn);                                 // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
     add_page(p, proc->pid);                         // add to swappable list
     cprintf("swap in %x\n", va);
