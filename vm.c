@@ -13,7 +13,7 @@
 #define SLOTSIZE SWAPSIZE/PGSIZE  // number of slots
 #define PR_FIFO 1
 #define PR_SCND 2
-#define PR_ALGO PR_FIFO
+#define PR_ALGO PR_SCND
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -117,7 +117,7 @@ get_slot(uint pn_pid)
     for (; i < SLOTSIZE; i++)
         if (swap_map.slots[i] == pn_pid)
             return i<<3;
-    return -1;
+    panic("swap: slot not found");
 }
 
 void
@@ -125,18 +125,19 @@ rm_slot(uint slotn)
 {
     acquire(&swap_map.lock);
     uint i = slotn>>3;
-    if (i >= SLOTSIZE) return;
+    if (i >= SLOTSIZE)
+        panic("swap: release non-exist slot");
     swap_map.slots[i] = 0;
     release(&swap_map.lock);
 }
 
 void
-add_page(pte_t *p, uint pid)
+add_page(pte_t *p, char *va, uint pid)
 {
     acquire(&fifo.lock);
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
-    e->pn_pid = PTE_ADDR(*p) | pid;
+    e->pn_pid = (uint)va | pid;
     e->ref = *p & PTE_A;
     Q_INSERT_TAIL(&fifo.queue, e, link);
     release(&fifo.lock);
@@ -160,7 +161,6 @@ struct swap_entry *
 get_page()
 {
     acquire(&fifo.lock);
-    //struct swap_entry *e = Q_FIRST(&fifo.queue); // fifo algo
     struct swap_entry *e;
     if (PR_ALGO != PR_SCND) goto ret;
     Q_FOREACH(e, &fifo.queue, link) {
@@ -403,7 +403,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     mappages(pgdir, (char*)a, PGSIZE, v2p(mem), PTE_W|PTE_U);
     pte_t * p = getpte(pgdir, (char*)a);
     if (a > PGROUNDUP(oldsz))
-        if (*p &PTE_U) add_page(p, proc->pid);
+        if (*p &PTE_U) add_page(p, (char *)a, proc->pid);
   }
   return newsz;
 }
@@ -426,13 +426,11 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
-
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
       char *v = p2v(pa);
-      rm_page(pa|pid);
-      //cprintf("dealloc %d %x\n", pid, v);
+      rm_page(a|pid);
       kfree(v);
       *pte = 0;
     }
@@ -499,7 +497,7 @@ copyuvm(pde_t *pgdir, uint sz, uint pid)
       goto bad;
     pte_t * p = getpte(d, (char*)i);
     if (i>0)
-        if (*p &PTE_U) add_page(p, pid);
+        if (*p &PTE_U) add_page(p, (char*)i, pid);
     //cprintf("copy alloc %d %x\n", pid, mem);
   }
   return d;
@@ -582,12 +580,11 @@ page_in(uint va)
     pte_t *p = getpte(proc->pgdir, (char*)va);      // get PTE
     if (p == 0)
         panic("paging: pte should exist");
-    uint pa = PTE_ADDR(*p);                         // get memory address
-    uint slotn = get_slot(pa | (proc->pid));        // get the slot id using pte
+    uint slotn = get_slot(va | (proc->pid));        // get the slot id using pte
     read_swap(slotn, (char *)mem);                  // read in page
     rm_slot(slotn);                                 // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
-    add_page(p, proc->pid);                         // add to swappable list
+    add_page(p, (char *)va, proc->pid);             // add to swappable list
     cprintf("page in %x\n", va);
 }
 
