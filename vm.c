@@ -11,6 +11,9 @@
 
 #define SWAPSIZE 0x8000000  //128MB swap area
 #define SLOTSIZE SWAPSIZE/PGSIZE  // number of slots
+#define PR_FIFO 1
+#define PR_SCND 2
+#define PR_ALGO PR_FIFO
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -24,6 +27,7 @@ struct swap_entry{
     // we can't actually use pointer to pte
     // because in page_out, it's not the same page table
     uint pn_pid;
+    uint ref;  // reference bit
     q_entry link;
 };
 
@@ -132,7 +136,8 @@ add_page(pte_t *p, uint pid)
     acquire(&fifo.lock);
     struct swap_entry *e = (struct swap_entry *)alloc_slab();
     e->ptr_pte = p;
-    e->pn_pid = PTE_ADDR(*p) | (pid);
+    e->pn_pid = PTE_ADDR(*p) | pid;
+    e->ref = *p & PTE_A;
     Q_INSERT_TAIL(&fifo.queue, e, link);
     release(&fifo.lock);
 }
@@ -155,10 +160,19 @@ struct swap_entry *
 get_page()
 {
     acquire(&fifo.lock);
-    struct swap_entry *e = Q_FIRST(&fifo.queue); // fifo algo
+    //struct swap_entry *e = Q_FIRST(&fifo.queue); // fifo algo
+    struct swap_entry *e;
+    if (PR_ALGO != PR_SCND) goto ret;
+    Q_FOREACH(e, &fifo.queue, link) {
+        if (e->ref == PTE_A) e->ref = 0;
+        else{
+            release(&fifo.lock);
+            return e;
+        }
+    }
 
-
-
+ret:
+    e = Q_FIRST(&fifo.queue);
     release(&fifo.lock);
     return e;
 }
@@ -200,6 +214,38 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
     pa += PGSIZE;
   }
   return 0;
+}
+
+void
+write_ref(struct proc *p)
+{
+    acquire(&fifo.lock);
+    struct swap_entry *e;
+    Q_FOREACH(e, &fifo.queue, link) {
+        if (PTE_FLAGS(e->pn_pid) != proc->pid) continue;
+        uint pa = PTE_ADDR(*(e->ptr_pte));
+        pte_t *p = getpte(proc->pgdir, (char*)p2v(pa));
+        if (p == 0)
+            panic("write_ref: PTE should exist");
+        *p = ((*p) & (0xffffffff ^ PTE_A)) | (e->ref);
+    }
+    release(&fifo.lock);
+}
+
+void
+read_ref()
+{
+    acquire(&fifo.lock);
+    struct swap_entry *e;
+    Q_FOREACH(e, &fifo.queue, link) {
+        if (PTE_FLAGS(e->pn_pid) != proc->pid) continue;
+        uint pa = PTE_ADDR(*(e->ptr_pte));
+        pte_t *p = getpte(proc->pgdir, (char*)p2v(pa));
+        if (p == 0)
+            panic("read_ref: PTE should exist");
+        e->ref = (*p) & PTE_A;
+    }
+    release(&fifo.lock);
 }
 
 // There is one page table per process, plus one that's used when
@@ -272,6 +318,7 @@ kvmalloc(void)
 void
 switchkvm(void)
 {
+  if (!Q_EMPTY(&fifo.queue)) read_ref();
   lcr3(v2p(kpgdir));   // switch to the kernel page table
 }
 
@@ -279,6 +326,7 @@ switchkvm(void)
 void
 switchuvm(struct proc *p)
 {
+  write_ref(p);
   pushcli();
   cpu->gdt[SEG_TSS] = SEG16(STS_T32A, &cpu->ts, sizeof(cpu->ts)-1, 0);
   cpu->gdt[SEG_TSS].s = 0;
@@ -378,11 +426,12 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
     if(!pte)
       a += (NPTENTRIES - 1) * PGSIZE;
     else if((*pte & PTE_P) != 0){
-      rm_page(PTE_ADDR(*pte)|(pid));
+
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
       char *v = p2v(pa);
+      rm_page(pa|pid);
       //cprintf("dealloc %d %x\n", pid, v);
       kfree(v);
       *pte = 0;
@@ -528,25 +577,25 @@ page_in(uint va)
 {
     char *mem = kalloc();
     if (mem == 0)
-        panic("swap: no memory to page in");
+        panic("paging: no memory to page in");
 
     pte_t *p = getpte(proc->pgdir, (char*)va);      // get PTE
     if (p == 0)
-        panic("swap: pte should exist");
+        panic("paging: pte should exist");
     uint pa = PTE_ADDR(*p);                         // get memory address
     uint slotn = get_slot(pa | (proc->pid));        // get the slot id using pte
     read_swap(slotn, (char *)mem);                  // read in page
     rm_slot(slotn);                                 // release slot
     *p = v2p(mem)| PTE_FLAGS(*p) |PTE_P ;           // recover pte
     add_page(p, proc->pid);                         // add to swappable list
-    cprintf("swap in %x\n", va);
+    cprintf("page in %x\n", va);
 }
 
 void
 page_out()
 {
     if (Q_EMPTY(&fifo.queue)) {
-        panic("swap: no page to page out");
+        panic("paging: no page to page out");
     }
     struct swap_entry *e = get_page();              // get a page to swap out
     pte_t *p = e->ptr_pte;                          // get PTE
@@ -556,5 +605,5 @@ page_out()
     write_swap(slotn, (char *)p2v(pa));             // write page to disk
     kfree(p2v(pa));                                 // free memory
     rm_page(e->pn_pid);                             // remove swap entry
-    cprintf("swap out %x\n", e->pn_pid);
+    cprintf("page out %x\n", e->pn_pid);
 }
