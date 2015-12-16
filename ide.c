@@ -11,32 +11,37 @@
 #include "spinlock.h"
 #include "buf.h"
 
-#define ISA_DATA                0x00
-#define ISA_ERROR               0x01
-#define ISA_PRECOMP             0x01
-#define ISA_CTRL                0x02
-#define ISA_SECCNT              0x02
-#define ISA_SECTOR              0x03
-#define ISA_CYL_LO              0x04
-#define ISA_CYL_HI              0x05
-#define ISA_SDH                 0x06
-#define ISA_COMMAND             0x07
-#define ISA_STATUS              0x07
+#define ATA_DATA                0x00
+#define ATA_ERROR               0x01
+#define ATA_PRECOMP             0x01
+#define ATA_CTRL                0x02
+#define ATA_SECCNT              0x02
+#define ATA_SECTOR              0x03
+#define ATA_CYL_LO              0x04
+#define ATA_CYL_HI              0x05
+#define ATA_SDH                 0x06
+#define ATA_COMMAND             0x07
+#define ATA_STATUS              0x07
 
-#define IDE_BSY                 0x80
-#define IDE_DRDY                0x40
-#define IDE_DF                  0x20
-#define IDE_ERR                 0x01
+#define ATA_SR_BSY              0x80    // Busy
+#define ATA_SR_DRDY             0x40    // Drive ready
+#define ATA_SR_DF               0x20    // Drive write fault
+#define ATA_SR_DSC              0x10    // Drive seek complete
+#define ATA_SR_DRQ              0x08    // Data request ready
+#define ATA_SR_CORR             0x04    // Corrected data
+#define ATA_SR_IDX              0x02    // Inlex
+#define ATA_SR_ERR              0x01    // Error
 
-#define IDE_CMD_READ            0x20
-#define IDE_CMD_WRITE           0x30
+#define ATA_CMD_READ            0x20
+#define ATA_CMD_WRITE           0x30
 
-#define IO_BASE0                0x1F0
-#define IO_BASE1                0x170
+#define IO_BASE0                0x1F0   // Primary
+#define IO_BASE1                0x170   // Secondary
 #define IO_CTRL0                0x3F4
 #define IO_CTRL1                0x374
 
-#define SWAP_DEVNO				4
+#define FS_DEVNO                1       // Primary slave
+#define SWAP_DEVNO				2       // Secondary master
 #define SECTSIZE				512
 // idequeue points to the buf now being read/written to the disk.
 // idequeue->qnext points to the next buf to be processed.
@@ -46,29 +51,15 @@ static struct spinlock idelock;
 static struct buf *idequeue;
 
 static int havedisk1 = 0;
-static int havedisk4 = 0;
+static int havedisk2 = 0;
 static void idestart(struct buf*);
 
 // Wait for IDE disk to become ready.
-/*
-static int
-idewait(int checkerr)
-{
-  int r;
-
-  while(((r = inb(0x1f7)) & (IDE_BSY|IDE_DRDY)) != IDE_DRDY)
-    ;
-  if(checkerr && (r & (IDE_DF|IDE_ERR)) != 0)
-    return -1;
-  return 0;
-}
-*/
 static int
 idewait(unsigned short iobase, int check_error) {
     int r;
-    while ((r = inb(iobase + ISA_STATUS)) & IDE_BSY)
-        /* nothing */;
-    if (check_error && (r & (IDE_DF | IDE_ERR)) != 0) {
+    while ((r = inb(iobase + ATA_STATUS)) & ATA_SR_BSY);
+    if (check_error && (r & (ATA_SR_DF | ATA_SR_ERR)) != 0) {
         return -1;
     }
     return 0;
@@ -85,9 +76,9 @@ ideinit(void)
   idewait(IO_BASE0, 0);
 
   // Check if disk 1 is present
-  outb(IO_BASE0 + ISA_SDH, 0xe0 | ((1 & 1)<<4));
+  outb(IO_BASE0 + ATA_SDH, 0xe0 | ((FS_DEVNO & 1)<<4));
   for(i=0; i<1000; i++){
-    if(inb(IO_BASE0 + ISA_STATUS) != 0){
+    if(inb(IO_BASE0 + ATA_STATUS) != 0){
       havedisk1 = 1;
       break;
     }
@@ -96,16 +87,16 @@ ideinit(void)
     panic("ide disk 1 not present");
 
   idewait(IO_BASE1, 0);
-  // check if disk 4 is present
-  outb(IO_BASE1 + ISA_SDH, 0xe0 | ((SWAP_DEVNO & 1)<<4));
+  // check if disk 2 is present
+  outb(IO_BASE1 + ATA_SDH, 0xe0 | ((SWAP_DEVNO & 1)<<4));
   for(i=0; i<1000; i++){
-    if(inb(IO_BASE1 + ISA_STATUS) != 0){
-      havedisk4 = 1;
+    if(inb(IO_BASE1 + ATA_STATUS) != 0){
+      havedisk2 = 1;
       break;
     }
   }
-  if (havedisk4 == 0)
-    panic("ide disk 4(swap disk) not present");
+  if (havedisk2 == 0)
+    panic("ide disk 2(swap disk) not present");
 
   // Switch back to disk 0.
   outb(0x1f6, 0xe0 | (0<<4));
@@ -126,10 +117,10 @@ idestart(struct buf *b)
   outb(0x1f5, (b->sector >> 16) & 0xff);
   outb(0x1f6, 0xe0 | ((b->dev&1)<<4) | ((b->sector>>24)&0x0f));
   if(b->flags & B_DIRTY){
-    outb(0x1f7, IDE_CMD_WRITE);
+    outb(0x1f7, ATA_CMD_WRITE);
     outsl(0x1f0, b->data, 512/4);
   } else {
-    outb(0x1f7, IDE_CMD_READ);
+    outb(0x1f7, ATA_CMD_READ);
   }
 }
 
@@ -209,13 +200,13 @@ read_swap(uint secno, void *dst)
     uint nsecs = 8;
     idewait(IO_BASE1, 0);
 
-    outb(ioctrl + ISA_CTRL, 0);
-    outb(iobase + ISA_SECCNT, nsecs);
-    outb(iobase + ISA_SECTOR, secno & 0xFF);
-    outb(iobase + ISA_CYL_LO, (secno >> 8) & 0xFF);
-    outb(iobase + ISA_CYL_HI, (secno >> 16) & 0xFF);
-    outb(iobase + ISA_SDH, 0xE0 | ((ideno & 1) << 4) | ((secno >> 24) & 0xF));
-    outb(iobase + ISA_COMMAND, IDE_CMD_READ);
+    outb(ioctrl + ATA_CTRL, 0);
+    outb(iobase + ATA_SECCNT, nsecs);
+    outb(iobase + ATA_SECTOR, secno & 0xFF);
+    outb(iobase + ATA_CYL_LO, (secno >> 8) & 0xFF);
+    outb(iobase + ATA_CYL_HI, (secno >> 16) & 0xFF);
+    outb(iobase + ATA_SDH, 0xE0 | ((ideno & 1) << 4) | ((secno >> 24) & 0xF));
+    outb(iobase + ATA_COMMAND, ATA_CMD_READ);
 
     int ret = 0;
     for (; nsecs > 0; nsecs --, dst += SECTSIZE) {
@@ -239,13 +230,13 @@ write_swap(uint secno, const void *src)
     uint nsecs = 8;
     idewait(IO_BASE1, 0);
 
-	outb(ioctrl + ISA_CTRL, 0);
-    outb(iobase + ISA_SECCNT, nsecs);
-    outb(iobase + ISA_SECTOR, secno & 0xFF);
-    outb(iobase + ISA_CYL_LO, (secno >> 8) & 0xFF);
-    outb(iobase + ISA_CYL_HI, (secno >> 16) & 0xFF);
-    outb(iobase + ISA_SDH, 0xE0 | ((ideno & 1) << 4) | ((secno >> 24) & 0xF));
-    outb(iobase + ISA_COMMAND, IDE_CMD_WRITE);
+	outb(ioctrl + ATA_CTRL, 0);
+    outb(iobase + ATA_SECCNT, nsecs);
+    outb(iobase + ATA_SECTOR, secno & 0xFF);
+    outb(iobase + ATA_CYL_LO, (secno >> 8) & 0xFF);
+    outb(iobase + ATA_CYL_HI, (secno >> 16) & 0xFF);
+    outb(iobase + ATA_SDH, 0xE0 | ((ideno & 1) << 4) | ((secno >> 24) & 0xF));
+    outb(iobase + ATA_COMMAND, ATA_CMD_WRITE);
 
     int ret = 0;
     for (; nsecs > 0; nsecs --, src += SECTSIZE) {

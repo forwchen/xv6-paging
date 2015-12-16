@@ -19,10 +19,10 @@ extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 struct segdesc gdt[NSEGS];
 
-typedef Q_HEAD(swap_entry_list, swap_entry) q_head;
-typedef Q_ENTRY(swap_entry) q_entry;
+typedef Q_HEAD(page_entry_list, page_entry) q_head;
+typedef Q_ENTRY(page_entry) q_entry;
 
-struct swap_entry{
+struct page_entry{
     pte_t * ptr_pte;
     // we can't actually use pointer to pte
     // because in page_out, it's not the same page table
@@ -135,7 +135,7 @@ void
 add_page(pte_t *p, char *va, uint pid)
 {
     acquire(&fifo.lock);
-    struct swap_entry *e = (struct swap_entry *)alloc_slab();
+    struct page_entry *e = (struct page_entry *)alloc_slab();
     e->ptr_pte = p;
     e->pn_pid = (uint)va | pid;
     e->ref = *p & PTE_A;
@@ -147,7 +147,7 @@ void
 rm_page(uint pn_pid)
 {
     acquire(&fifo.lock);
-    struct swap_entry *e;
+    struct page_entry *e;
     Q_FOREACH(e, &fifo.queue, link) {
         if (e->pn_pid == pn_pid) {
             Q_REMOVE(&fifo.queue, e, link);
@@ -157,11 +157,11 @@ rm_page(uint pn_pid)
     release(&fifo.lock);
 }
 
-struct swap_entry *
+struct page_entry *
 get_page()
 {
     acquire(&fifo.lock);
-    struct swap_entry *e;
+    struct page_entry *e;
     if (PR_ALGO != PR_SCND) goto ret;
     Q_FOREACH(e, &fifo.queue, link) {
         if (e->ref == PTE_A) e->ref = 0;
@@ -220,7 +220,7 @@ void
 write_ref(struct proc *p)
 {
     acquire(&fifo.lock);
-    struct swap_entry *e;
+    struct page_entry *e;
     Q_FOREACH(e, &fifo.queue, link) {
         if (PTE_FLAGS(e->pn_pid) != proc->pid) continue;
         uint pa = PTE_ADDR(*(e->ptr_pte));
@@ -236,7 +236,7 @@ void
 read_ref()
 {
     acquire(&fifo.lock);
-    struct swap_entry *e;
+    struct page_entry *e;
     Q_FOREACH(e, &fifo.queue, link) {
         if (PTE_FLAGS(e->pn_pid) != proc->pid) continue;
         uint pa = PTE_ADDR(*(e->ptr_pte));
@@ -594,13 +594,13 @@ page_out()
     if (Q_EMPTY(&fifo.queue)) {
         panic("paging: no page to page out");
     }
-    struct swap_entry *e = get_page();              // get a page to swap out
+    struct page_entry *e = get_page();              // get a page to page out
     pte_t *p = e->ptr_pte;                          // get PTE
     uint pa = PTE_ADDR(*p);                         // get memory address
     *p ^= PTE_P;                                    // set present bit to 0
     uint slotn = alloc_slot(e->pn_pid);             // alloc a slot on disk
     write_swap(slotn, (char *)p2v(pa));             // write page to disk
     kfree(p2v(pa));                                 // free memory
-    rm_page(e->pn_pid);                             // remove swap entry
+    rm_page(e->pn_pid);                             // remove page entry
     cprintf("page out %x\n", e->pn_pid);
 }
