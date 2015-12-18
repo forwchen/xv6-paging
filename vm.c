@@ -13,7 +13,7 @@
 #define SLOTSIZE SWAPSIZE/PGSIZE  // number of slots
 #define PR_FIFO 1
 #define PR_SCND 2
-#define PR_ALGO PR_SCND
+#define PR_ALGO PR_FIFO
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
