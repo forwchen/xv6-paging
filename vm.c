@@ -132,6 +132,19 @@ rm_slot(uint slotn)
 }
 
 void
+rm_page_slot(uint pn_pid)
+{
+    acquire(&swap_map.lock);
+    uint i = 0;
+    for (; i < SLOTSIZE; i++)
+        if (swap_map.slots[i] == pn_pid){
+            swap_map.slots[i] = 0;
+            break;
+        }
+    release(&swap_map.lock);
+}
+
+void
 add_page(pte_t *p, char *va, uint pid)
 {
     acquire(&fifo.lock);
@@ -144,12 +157,13 @@ add_page(pte_t *p, char *va, uint pid)
 }
 
 void
-rm_page(uint pn_pid)
+rm_page(uint pn_pid, uint release_slot)
 {
     acquire(&fifo.lock);
     struct page_entry *e;
     Q_FOREACH(e, &fifo.queue, link) {
         if (e->pn_pid == pn_pid) {
+            if (release_slot) rm_page_slot(e->pn_pid);
             Q_REMOVE(&fifo.queue, e, link);
             break;
         }
@@ -430,7 +444,7 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint pid)
       if(pa == 0)
         panic("kfree");
       char *v = p2v(pa);
-      rm_page(a|pid);
+      rm_page(a|pid, 1);
       kfree(v);
       *pte = 0;
     }
@@ -601,6 +615,6 @@ page_out()
     uint slotn = alloc_slot(e->pn_pid);             // alloc a slot on disk
     write_swap(slotn, (char *)p2v(pa));             // write page to disk
     kfree(p2v(pa));                                 // free memory
-    rm_page(e->pn_pid);                             // remove page entry
+    rm_page(e->pn_pid, 0);                             // remove page entry
     cprintf("page out %x\n", e->pn_pid);
 }
