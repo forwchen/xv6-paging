@@ -32,9 +32,9 @@ struct page_entry{
 };
 
 struct {
-    q_head queue;
+    q_head qhead;
     struct spinlock lock;
-} fifo;
+} queue;
 
 struct {
     uint slots[SLOTSIZE];
@@ -147,47 +147,47 @@ rm_page_slot(uint pn_pid)
 void
 add_page(pte_t *p, char *va, uint pid)
 {
-    acquire(&fifo.lock);
+    acquire(&queue.lock);
     struct page_entry *e = (struct page_entry *)alloc_slab();
     e->ptr_pte = p;
     e->pn_pid = (uint)va | pid;
     e->ref = *p & PTE_A;
-    Q_INSERT_TAIL(&fifo.queue, e, link);
-    release(&fifo.lock);
+    Q_INSERT_TAIL(&queue.qhead, e, link);
+    release(&queue.lock);
 }
 
 void
 rm_page(uint pn_pid, uint release_slot)
 {
-    acquire(&fifo.lock);
+    acquire(&queue.lock);
     struct page_entry *e;
-    Q_FOREACH(e, &fifo.queue, link) {
+    Q_FOREACH(e, &queue.qhead, link) {
         if (e->pn_pid == pn_pid) {
             if (release_slot) rm_page_slot(e->pn_pid);
-            Q_REMOVE(&fifo.queue, e, link);
+            Q_REMOVE(&queue.qhead, e, link);
             break;
         }
     }
-    release(&fifo.lock);
+    release(&queue.lock);
 }
 
 struct page_entry *
 get_page()
 {
-    acquire(&fifo.lock);
+    acquire(&queue.lock);
     struct page_entry *e;
     if (PR_ALGO != PR_SCND) goto ret;
-    Q_FOREACH(e, &fifo.queue, link) {
+    Q_FOREACH(e, &queue.qhead, link) {
         if (e->ref == PTE_A) e->ref = 0;
         else{
-            release(&fifo.lock);
+            release(&queue.lock);
             return e;
         }
     }
 
 ret:
-    e = Q_FIRST(&fifo.queue);
-    release(&fifo.lock);
+    e = Q_FIRST(&queue.qhead);
+    release(&queue.lock);
     return e;
 }
 
@@ -233,9 +233,9 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 void
 write_ref(struct proc *p)
 {
-    acquire(&fifo.lock);
+    acquire(&queue.lock);
     struct page_entry *e;
-    Q_FOREACH(e, &fifo.queue, link) {
+    Q_FOREACH(e, &queue.qhead, link) {
         if (PTE_FLAGS(e->pn_pid) != proc->pid) continue;
         uint pa = PTE_ADDR(*(e->ptr_pte));
         pte_t *p = getpte(proc->pgdir, (char*)p2v(pa));
@@ -243,15 +243,15 @@ write_ref(struct proc *p)
             panic("write_ref: PTE should exist");
         *p = ((*p) & (0xffffffff ^ PTE_A)) | (e->ref);
     }
-    release(&fifo.lock);
+    release(&queue.lock);
 }
 
 void
 read_ref()
 {
-    acquire(&fifo.lock);
+    acquire(&queue.lock);
     struct page_entry *e;
-    Q_FOREACH(e, &fifo.queue, link) {
+    Q_FOREACH(e, &queue.qhead, link) {
         if (PTE_FLAGS(e->pn_pid) != proc->pid) continue;
         uint pa = PTE_ADDR(*(e->ptr_pte));
         pte_t *p = getpte(proc->pgdir, (char*)p2v(pa));
@@ -259,7 +259,7 @@ read_ref()
             panic("read_ref: PTE should exist");
         e->ref = (*p) & PTE_A;
     }
-    release(&fifo.lock);
+    release(&queue.lock);
 }
 
 // There is one page table per process, plus one that's used when
@@ -332,7 +332,7 @@ kvmalloc(void)
 void
 switchkvm(void)
 {
-  if (!Q_EMPTY(&fifo.queue)) read_ref();
+  if (!Q_EMPTY(&queue.qhead)) read_ref();
   lcr3(v2p(kpgdir));   // switch to the kernel page table
 }
 
@@ -579,9 +579,9 @@ do_pgflt(uint va)
 void
 swapinit()
 {
-    Q_INIT(&fifo.queue);
+    Q_INIT(&queue.qhead);
     initlock(&swap_map.lock, "swap_map");
-    initlock(&fifo.lock, "queue");
+    initlock(&queue.lock, "head");
 }
 
 void
@@ -605,7 +605,7 @@ page_in(uint va)
 void
 page_out()
 {
-    if (Q_EMPTY(&fifo.queue)) {
+    if (Q_EMPTY(&queue.qhead)) {
         panic("paging: no page to page out");
     }
     struct page_entry *e = get_page();              // get a page to page out
